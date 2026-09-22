@@ -45,7 +45,8 @@ async function syncCustomer(orgId, deleted) {
     contract: parseContract(org),
     updatedAt: nowIso(),
   });
-  return `customer "${org.name}" synced`;
+  const recomputed = recomputeEnabledFeaturesForCustomer(orgId);
+  return `customer "${org.name}" synced` + (recomputed ? `, recomputed enabledFeatures for ${recomputed} membership(s)` : "");
 }
 
 // Keycloak requires org membership as a prerequisite for org-group
@@ -64,6 +65,35 @@ function effectiveFeatures(contract, featureOverrides) {
   const base = contract?.featureSets || [];
   if (!featureOverrides) return base;
   return base.filter((key) => featureOverrides[key] !== false);
+}
+
+// Re-derives enabledFeatures for every already-synced userWorkspace under a
+// customer, so a contract change (new/removed featureSets) propagates to
+// existing memberships instead of only affecting ones created afterward.
+// Bounded, on-demand recomputation - not GUM's full reachability-diffing
+// engine (event-fanout.ts), just enough to stop the staleness the README
+// used to call out as a known gap.
+function recomputeEnabledFeaturesForCustomer(orgId) {
+  const customer = db.find("customers", "kcOrgId", orgId);
+  const affected = db.all("userWorkspaces").filter((uw) => uw.customerId === orgId);
+  for (const uw of affected) {
+    const workspace = db.find("workspaces", "kcGroupId", uw.workspaceId);
+    const enabledFeatures = effectiveFeatures(customer?.contract, workspace?.featureOverrides);
+    db.upsert("userWorkspaces", "id", { ...uw, enabledFeatures, updatedAt: nowIso() });
+  }
+  return affected.length;
+}
+
+// Same idea, scoped to one workspace - covers a featureOverrides change.
+function recomputeEnabledFeaturesForWorkspace(groupId) {
+  const workspace = db.find("workspaces", "kcGroupId", groupId);
+  const customer = db.find("customers", "kcOrgId", workspace?.customerId);
+  const affected = db.all("userWorkspaces").filter((uw) => uw.workspaceId === groupId);
+  for (const uw of affected) {
+    const enabledFeatures = effectiveFeatures(customer?.contract, workspace?.featureOverrides);
+    db.upsert("userWorkspaces", "id", { ...uw, enabledFeatures, updatedAt: nowIso() });
+  }
+  return affected.length;
 }
 
 async function resolveWorkspaceId(orgId, groupId, event) {
@@ -102,7 +132,8 @@ async function syncWorkspace(orgId, groupId, deleted) {
     featureOverrides,
     updatedAt: nowIso(),
   });
-  return `workspace "${group.name}" synced for customer ${orgId}`;
+  const recomputed = recomputeEnabledFeaturesForWorkspace(group.id);
+  return `workspace "${group.name}" synced for customer ${orgId}` + (recomputed ? `, recomputed enabledFeatures for ${recomputed} membership(s)` : "");
 }
 
 async function syncUserWorkspace(orgId, groupId, userId, deleted) {
