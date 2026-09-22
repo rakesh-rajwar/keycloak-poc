@@ -1,0 +1,13 @@
+{
+  "name": "phase1-webhook-consumer",
+  "version": "1.0.0",
+  "description": "PoC downstream app that syncs its local tables from Keycloak Admin Event Webhooks (Phase 1: Out-of-Band Single Source of Truth)",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2"
+  }
+}

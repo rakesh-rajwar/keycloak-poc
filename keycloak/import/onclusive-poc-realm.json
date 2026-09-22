@@ -1,0 +1,48 @@
+{
+  "realm": "onclusive-poc",
+  "enabled": true,
+  "eventsEnabled": true,
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "eventsListeners": ["jboss-logging", "ext-event-webhook"],
+  "organizationsEnabled": true,
+  "roles": {
+    "realm": [
+      { "name": "org-admin", "description": "Full admin rights within their organization" },
+      { "name": "org-member", "description": "Standard member rights within their organization" }
+    ]
+  },
+  "groups": [
+    {
+      "name": "subscriptions",
+      "path": "/subscriptions",
+      "subGroups": []
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "webhook-consumer",
+      "name": "Downstream consumer app (Phase 1 webhook sync client)",
+      "description": "Service account used by the downstream consumer-app to call the Keycloak Admin REST API when an admin event webhook fires",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "poc-webhook-consumer-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "authorizationServicesEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-webhook-consumer",
+      "serviceAccountClientId": "webhook-consumer",
+      "enabled": true,
+      "clientRoles": {
+        "realm-management": ["realm-admin"]
+      }
+    }
+  ]
+}
