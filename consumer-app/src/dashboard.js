@@ -23,17 +23,17 @@ export const dashboardHtml = `<!doctype html>
 <h1>Phase 1 PoC &mdash; downstream consumer-app local tables</h1>
 <p>This page shows <em>only</em> data written by this app's webhook handler. Nothing here is edited directly &mdash; it exists purely because Keycloak fired an Admin Event Webhook. Refreshes every 3s.</p>
 
-<h2>Organizations</h2>
-<table id="organizations"></table>
+<h2>Customers</h2>
+<table id="customers"></table>
 
-<h2>Subscriptions</h2>
-<table id="subscriptions"></table>
+<h2>Workspaces</h2>
+<table id="workspaces"></table>
 
 <h2>Users</h2>
 <table id="users"></table>
 
-<h2>Memberships</h2>
-<table id="memberships"></table>
+<h2>User Workspaces</h2>
+<table id="userWorkspaces"></table>
 
 <h2>Recent webhook events</h2>
 <table id="events"></table>
@@ -49,15 +49,16 @@ function fmt(v) {
   if (v === undefined || v === null) return '';
   if (Array.isArray(v)) return v.join(', ');
   if (typeof v === 'boolean') return v ? 'yes' : 'no';
+  if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
 }
 async function refresh() {
   const state = await fetch('/state').then(r => r.json());
   const events = await fetch('/events').then(r => r.json());
-  renderTable(document.getElementById('organizations'), state.organizations, ['name', 'alias', 'domain', 'enabled', 'kcOrgId', 'updatedAt']);
-  renderTable(document.getElementById('subscriptions'), state.subscriptions, ['organizationId', 'plan', 'seats', 'path', 'updatedAt']);
-  renderTable(document.getElementById('users'), state.users, ['username', 'email', 'kcUserId', 'updatedAt']);
-  renderTable(document.getElementById('memberships'), state.memberships, ['organizationId', 'username', 'roles', 'updatedAt']);
+  renderTable(document.getElementById('customers'), state.customers, ['businessName', 'alias', 'salesforceId', 'isActive', 'contract', 'kcOrgId', 'updatedAt']);
+  renderTable(document.getElementById('workspaces'), state.workspaces, ['businessName', 'customerId', 'isDefault', 'featureOverrides', 'kcGroupId', 'updatedAt']);
+  renderTable(document.getElementById('users'), state.users, ['name', 'email', 'kcUserId', 'updatedAt']);
+  renderTable(document.getElementById('userWorkspaces'), state.userWorkspaces, ['email', 'workspaceId', 'enabledFeatures', 'updatedAt']);
   const evRows = events.slice(0, 25).map(e => ({
     receivedAt: e.receivedAt,
     resourceType: e.resourceType,

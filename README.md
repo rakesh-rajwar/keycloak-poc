@@ -5,7 +5,7 @@ Proof of concept for **Phase 1** of [Centralizing Identity, Memberships & Author
 Phase 1 scope, from the proposal:
 
 - Users keep authenticating against **Auth0** — nothing about login changes.
-- **Ops** uses the **Keycloak Admin UI** (or REST API) to manually create Organizations, set subscription/plan attributes, and manage user memberships & roles.
+- **Ops** uses the **Keycloak Admin UI** (or REST API) to manually create Organizations, set subscription/plan attributes, and manage user memberships.
 - Keycloak fires **Admin Event Webhooks** on every change.
 - **Downstream consumer apps** listen for those webhooks and keep their own local DB tables in sync — no direct DB writes from Keycloak, no app rewrite required.
 
@@ -17,15 +17,25 @@ This PoC stands up that whole loop end to end so you can watch it happen.
 |---|---|
 | `postgres` | Keycloak's backing store |
 | `keycloak` | Keycloak 26.6.3 + the [`keycloak-events`](https://github.com/p2-inc/keycloak-events) extension (built from source at `v0.62`, the release matching this Keycloak version — real HTTP webhook delivery for admin events), Organizations enabled (GA since 26.0), `onclusive-poc` realm pre-imported |
-| `consumer-app` | Stand-in for a "legacy downstream app." Receives webhook calls, resolves the change against the Keycloak Admin REST API, and upserts its own local tables (`organizations`, `subscriptions`, `users`, `memberships`) — this is the thing Phase 1 is actually validating |
+| `consumer-app` | Stand-in for a "legacy downstream app." Receives webhook calls, resolves the change against the Keycloak Admin REST API, and upserts its own local tables (`customers`, `workspaces`, `users`, `userWorkspaces`) — this is the thing Phase 1 is actually validating |
 
-## Data model used in this PoC
+## Data model: mirrors GUM (`claim`), not a generic example
 
-- **Organization** → Keycloak's native `Organization` entity (`/admin/realms/{realm}/organizations`).
-- **Subscription / plan** → a Keycloak **Group** under `/subscriptions/*`, carrying attributes `organization_id`, `plan`, `seats`. Groups don't nest under Organizations natively in Keycloak, so the link is attribute-based — the consumer-app resolves it by reading `organization_id` off the group.
-- **User Membership & Roles** → Organization membership (`/organizations/{id}/members`) plus realm role mappings (`org-admin`, `org-member`).
+Onclusive already has a real, working system for this — [`shared-services/claim`](../shared-services/claim) ("GUM" — Global User Management) — with its own MySQL tables and a webhook fan-out engine (`src/utils/event-fanout.ts`). Rather than invent placeholder entities, this PoC's Keycloak model mirrors GUM's real hierarchy 1:1, so it doubles as a concrete answer to "how would this hierarchy actually work in Keycloak":
 
-This answers one of the doc's open questions with a concrete proposal — see [Proposed webhook payload / linkage schema](#proposed-webhook-payload--linkage-schema) below.
+| GUM (`claim`) entity | Keycloak equivalent used here |
+|---|---|
+| `customers` (businessName, salesforceId, isActive, inactiveReason) | Native **Organization**, extra fields as `attributes` (verified live: Keycloak Organizations accept arbitrary string-array attributes) |
+| `contracts` (1:1 per customer — name, dates, featureSets/permissions/baseLimits) | No native Keycloak entity, so flattened onto the customer Organization as one `contract` JSON-string attribute |
+| `workspaces` (customerId FK, isDefault, featureOverrides) | **Organization-scoped Group** — Keycloak 26.6+'s `/organizations/{orgId}/groups`, a structural match for `workspaces.customerId` (replaces an earlier, less faithful design that linked a plain top-level group back to an org via attribute) |
+| `userWorkspaces` (M:N users↔workspaces) | Membership in the organization-scoped group. **Caveat found by testing**: Keycloak requires the user to already be a plain Organization member before they can be added to one of its groups (`"User is not member of the organization"` if not) — GUM itself has no users↔customers table, so that prerequisite membership is pure Keycloak plumbing with nothing to sync; `syncHandlers.js` explicitly no-ops it |
+| `features`, `contractFeatures`, `contractTemplates` | Out of scope — app-side reference/catalog data, not identity data. The consumer-app instead computes `enabledFeatures` per `userWorkspace` by reading the customer's `contract.featureSets`, filtered by the workspace's own `featureOverrides` — the same relationship GUM's schema comment describes ("Override inherited Contract features") |
+
+This answers one of the proposal doc's open questions with a concrete design — see [Proposed webhook payload / linkage schema](#proposed-webhook-payload--linkage-schema) below.
+
+### Known gap vs. GUM: no reachability recomputation
+
+GUM's `event-fanout.ts` snapshots each user's reachable-apps set before and after every mutation and diffs them, so a contract/feature change correctly cascades `user.updated`/`grant.created`/`grant.deleted` events to every affected user, even ones not touched directly. This PoC does **not** reproduce that: `enabledFeatures` on a `userWorkspace` row is only computed at the moment that membership is created. Verified live — updating a customer's `contract.featureSets` after a membership already exists leaves that membership's `enabledFeatures` stale until the membership itself changes again. A real Phase 1 implementation needs GUM's reachability-diffing pattern (or equivalent), not just "receive event, refetch, upsert."
 
 ## Run it
 
@@ -45,7 +55,7 @@ Open the downstream app's live view: **http://localhost:4000** — this table is
 
 Now either:
 
-- **Click through it yourself**: open the Keycloak Admin UI at **http://localhost:8080** (`admin` / `admin`), realm `onclusive-poc`, and create an Organization, a group under `/subscriptions` with `organization_id`/`plan`/`seats` attributes, a user, add them to the org, assign a role — or
+- **Click through it yourself**: open the Keycloak Admin UI at **http://localhost:8080** (`admin` / `admin`), realm `onclusive-poc` → Organizations → create one, add `salesforceId`/`isActive`/`contract` attributes, create a group under it (a workspace), add a user as an org member first, then to the group — or
 - **Run the scripted version** of the same steps:
 
   ```bash
@@ -61,12 +71,16 @@ Current local-table state: `curl -s localhost:4000/state | jq`
 
 ## Proposed webhook payload / linkage schema
 
-Answering the doc's question 2 ("what standard JSON payload schema should Keycloak emit via webhooks for app local sync?"): this PoC doesn't invent a new payload — it uses Keycloak's **native admin event shape** (`resourceType`, `operationType`, `resourcePath`, plus the `keycloak-events` extension's HMAC signature header) and treats the event as a *change notification*, not a full snapshot. The consumer-app always re-fetches the authoritative object from the Admin REST API rather than trusting embedded event data, which sidesteps versioning/drift issues if the event body's shape changes across Keycloak upgrades. The one schema convention this PoC *does* introduce, because Keycloak has no native concept of it, is the **group ↔ organization link**: any group representing a subscription must live under `/subscriptions/*` and carry an `organization_id` attribute pointing at the owning Organization's UUID. That convention — not a payload format — is the thing worth ratifying org-wide before other apps build sync logic against it.
+Answering the doc's question 2 ("what standard JSON payload schema should Keycloak emit via webhooks for app local sync?"): this PoC doesn't invent a new payload — it uses Keycloak's **native admin event shape** (`resourceType`, `operationType`, `resourcePath`, `representation`, plus the `keycloak-events` extension's HMAC signature header) and treats the event as a *change notification*, not a full snapshot. The consumer-app always re-fetches the authoritative object from the Admin REST API rather than trusting embedded event data (except to resolve an id missing from a collection-POST event's `resourcePath` — see below), which sidesteps versioning/drift issues if the event body's shape changes across Keycloak upgrades.
+
+Two real gaps in Keycloak's own event shape, found only by triggering each event live and reading `/events`, that any consumer needs to handle:
+- **CREATE events on a collection endpoint have no id in `resourcePath`.** `POST /organizations/{orgId}/members` and `POST /organizations/{orgId}/groups` both fire events whose `resourcePath` stops at the collection name. The added member's id has to come from `event.details.username` (then a lookup); the created group's id from parsing `event.representation`. Every other verb (UPDATE/DELETE, and CREATE on a nested resource like `.../groups/{id}/members/{userId}`) does include the full id chain in `resourcePath`. `syncHandlers.js`'s `pathSegments()` + these two fallbacks are the reusable pattern here.
+- GUM's own webhook schema (`webhooks-v1.ts`) is a much stronger design worth comparing against: versioned (`schemaVersion`), a closed `EventType` enum (`customer.created`, `workspace.updated`, `grant.deleted`, …), stable `ids` keyed by GUM's own entity names, and a `changes: {field: {from, to}}` diff on updates. Keycloak's raw admin events give you none of that — just "something changed at this path." If Phase 1 downstream apps are expected to consume a *stable* contract long-term, wrapping Keycloak's raw events in a GUM-shaped envelope (translate `resourceType`+`operationType` → a GUM-style `event` enum) is worth more than exposing Keycloak's native event shape directly.
 
 ## Known PoC simplifications (do not carry into production)
 
 - `admin`/`admin` Keycloak bootstrap credentials, and `poc-webhook-consumer-secret` / `poc-shared-webhook-secret` in plaintext in `docker-compose.yml`.
-- The `webhook-consumer` service account is granted the `realm-admin` composite role for simplicity. Scope this down to `view-users`, `query-groups`, `view-realm`, `view-organizations` for real use.
+- The `webhook-consumer` service account is granted the `realm-admin` composite role for simplicity. Scope this down to `view-users`, `view-realm`, `view-organizations` for real use.
 - `WEBHOOK_VERIFY=true` by default, confirmed working against a live instance (`X-Keycloak-Signature: <hex HMAC-SHA256>` of the raw body — see `consumer-app/src/server.js`). Still PoC-grade: the shared secret is a plaintext demo value, not pulled from a vault.
 - consumer-app's "local DB" is a JSON file, not a real RDBMS — swap `src/db.js` for Postgres/MySQL in a real downstream app; the sync *logic* (`syncHandlers.js`) is what's meant to be reusable.
 - No retry/dead-letter handling if the consumer-app is down when a webhook fires — Phase 1 in production needs at-least-once delivery semantics or a periodic reconciliation job as a backstop.
@@ -77,14 +91,14 @@ Answering the doc's question 2 ("what standard JSON payload schema should Keyclo
 docker-compose.yml
 keycloak/
   Dockerfile              # base Keycloak + keycloak-events webhook extension
-  import/onclusive-poc-realm.json   # realm, roles, /subscriptions group, service account client
+  import/onclusive-poc-realm.json   # realm, organizationsEnabled, service account client
 consumer-app/
   src/server.js           # webhook receiver + /state + /events + dashboard
-  src/syncHandlers.js      # per-resourceType sync logic (the reusable part)
+  src/syncHandlers.js      # per-resourceType sync logic, GUM-shaped (the reusable part)
   src/keycloakAdmin.js     # Admin REST client (client-credentials)
   src/db.js                # local "table" storage (JSON file, swap for real DB)
   src/dashboard.js         # live HTML view of the synced tables
 scripts/
-  demo.sh                  # scripts the "ops admin" actions via REST
+  demo.sh                  # scripts the "ops admin" actions via REST, GUM-shaped
   register-webhook.sh      # registers consumer-app as a webhook subscriber
 ```

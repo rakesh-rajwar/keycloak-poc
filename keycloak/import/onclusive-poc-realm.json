@@ -6,19 +6,6 @@
   "adminEventsDetailsEnabled": true,
   "eventsListeners": ["jboss-logging", "ext-event-webhook"],
   "organizationsEnabled": true,
-  "roles": {
-    "realm": [
-      { "name": "org-admin", "description": "Full admin rights within their organization" },
-      { "name": "org-member", "description": "Standard member rights within their organization" }
-    ]
-  },
-  "groups": [
-    {
-      "name": "subscriptions",
-      "path": "/subscriptions",
-      "subGroups": []
-    }
-  ],
   "clients": [
     {
       "clientId": "webhook-consumer",

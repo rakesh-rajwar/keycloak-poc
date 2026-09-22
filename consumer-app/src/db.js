@@ -4,10 +4,10 @@ import { dirname } from "node:path";
 const DB_PATH = process.env.DB_PATH || "/data/consumer-app-db.json";
 
 const EMPTY = {
-  organizations: [],
-  subscriptions: [],
+  customers: [],
+  workspaces: [],
   users: [],
-  memberships: [],
+  userWorkspaces: [],
   webhookEvents: [],
 };
 

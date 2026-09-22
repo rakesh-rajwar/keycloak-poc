@@ -48,9 +48,9 @@ async function getUserByUsername(username) {
 
 export const keycloakAdmin = {
   getOrganization: (orgId) => adminFetch(`/organizations/${orgId}`),
+  getOrganizationGroups: (orgId) => adminFetch(`/organizations/${orgId}/groups`),
+  getOrganizationGroup: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}`),
   getGroup: (groupId) => adminFetch(`/groups/${groupId}`),
-  getGroupMembers: (groupId) => adminFetch(`/groups/${groupId}/members`),
   getUser: (userId) => adminFetch(`/users/${userId}`),
   getUserByUsername,
-  getUserRealmRoles: (userId) => adminFetch(`/users/${userId}/role-mappings/realm`),
 };

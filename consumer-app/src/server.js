@@ -71,10 +71,10 @@ app.post("/webhooks/keycloak", express.raw({ type: "*/*", limit: "1mb" }), async
 
 app.get("/state", (_req, res) => {
   res.json({
-    organizations: db.all("organizations"),
-    subscriptions: db.all("subscriptions"),
+    customers: db.all("customers"),
+    workspaces: db.all("workspaces"),
     users: db.all("users"),
-    memberships: db.all("memberships"),
+    userWorkspaces: db.all("userWorkspaces"),
   });
 });
 
