@@ -25,13 +25,19 @@ Onclusive already has a real, working system for this — [`shared-services/clai
 
 | GUM (`claim`) entity | Keycloak equivalent used here |
 |---|---|
-| `customers` (businessName, salesforceId, isActive, inactiveReason) | Native **Organization**, extra fields as `attributes` (verified live: Keycloak Organizations accept arbitrary string-array attributes) |
+| `customers` (businessName, salesforceId, isActive, inactiveReason) | Native **Organization** — `businessName`→`name`, `isActive`→**Keycloak's own `enabled` field** (not a custom attribute — see below), `salesforceId`/`contract` as `attributes` (verified live: Organizations accept arbitrary string-array attributes) |
 | `contracts` (1:1 per customer — name, dates, featureSets/permissions/baseLimits) | No native Keycloak entity, so flattened onto the customer Organization as one `contract` JSON-string attribute |
 | `workspaces` (customerId FK, isDefault, featureOverrides) | **Organization-scoped Group** — Keycloak 26.6+'s `/organizations/{orgId}/groups`, a structural match for `workspaces.customerId` (replaces an earlier, less faithful design that linked a plain top-level group back to an org via attribute) |
 | `userWorkspaces` (M:N users↔workspaces) | Membership in the organization-scoped group. **Caveat found by testing**: Keycloak requires the user to already be a plain Organization member before they can be added to one of its groups (`"User is not member of the organization"` if not) — GUM itself has no users↔customers table, so that prerequisite membership is pure Keycloak plumbing with nothing to sync; `syncHandlers.js` explicitly no-ops it |
 | `features`, `contractFeatures`, `contractTemplates` | Out of scope — app-side reference/catalog data, not identity data. The consumer-app instead computes `enabledFeatures` per `userWorkspace` by reading the customer's `contract.featureSets`, filtered by the workspace's own `featureOverrides` — the same relationship GUM's schema comment describes ("Override inherited Contract features") |
 
 This answers one of the proposal doc's open questions with a concrete design — see [Proposed webhook payload / linkage schema](#proposed-webhook-payload--linkage-schema) below.
+
+### Why `isActive` uses Keycloak's native `enabled`, not a custom attribute
+
+Deliberate choice: prefer native Keycloak fields over custom attributes wherever one actually fits, rather than reinventing storage Keycloak already provides. `isActive` is stored as-is on the Organization's built-in `enabled` boolean rather than an `attributes.isActive` string.
+
+One nuance worth being explicit about: this is **not** semantically identical to what `isActive` means in GUM today. GUM's `isActive` is a *computed* state — `checkAndUpdateAccountActivation()` derives it from five criteria (valid contract, contract reaches an enabled feature, has a workspace, has a user, etc.), auto-deactivates on failure, and only ever re-activates via an explicit manual check. Keycloak's `enabled` is just a flat admin on/off switch with no derivation logic behind it. This PoC doesn't reproduce GUM's activation-derivation rules (same scoping call as the reachability gap below) — `enabled` is simply the closest native field to point `isActive` at, not a re-implementation of the business rule.
 
 ### Known gap vs. GUM: no reachability recomputation
 
@@ -55,7 +61,7 @@ Open the downstream app's live view: **http://localhost:4000** — this table is
 
 Now either:
 
-- **Click through it yourself**: open the Keycloak Admin UI at **http://localhost:8080** (`admin` / `admin`), realm `onclusive-poc` → Organizations → create one, add `salesforceId`/`isActive`/`contract` attributes, create a group under it (a workspace), add a user as an org member first, then to the group — or
+- **Click through it yourself**: open the Keycloak Admin UI at **http://localhost:8080** (`admin` / `admin`), realm `onclusive-poc` → Organizations → create one (leave "Enabled" on), add `salesforceId`/`contract` attributes, create a group under it (a workspace), add a user as an org member first, then to the group — or
 - **Run the scripted version** of the same steps:
 
   ```bash

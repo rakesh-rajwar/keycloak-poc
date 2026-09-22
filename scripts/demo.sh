@@ -17,7 +17,7 @@ CONTRACT_ESCAPED=$(printf '%s' "$CONTRACT_JSON" | sed 's/"/\\"/g')
 
 echo "==> 1. Create customer (Organization): Acme Corp, with its contract as an attribute"
 curl -sf -D /tmp/org_headers -o /dev/null -X POST "$KC_URL/admin/realms/$REALM/organizations" "${AUTH[@]}" \
-  -d "{\"name\":\"Acme Corp\",\"alias\":\"acme-corp\",\"enabled\":true,\"domains\":[{\"name\":\"acme.example.com\",\"verified\":false}],\"attributes\":{\"salesforceId\":[\"SF-12345\"],\"isActive\":[\"true\"],\"contract\":[\"$CONTRACT_ESCAPED\"]}}"
+  -d "{\"name\":\"Acme Corp\",\"alias\":\"acme-corp\",\"enabled\":true,\"domains\":[{\"name\":\"acme.example.com\",\"verified\":false}],\"attributes\":{\"salesforceId\":[\"SF-12345\"],\"contract\":[\"$CONTRACT_ESCAPED\"]}}"
 ORG_ID=$(id_from_location /tmp/org_headers)
 echo "    customer id: $ORG_ID"
 

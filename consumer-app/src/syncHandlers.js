@@ -41,7 +41,7 @@ async function syncCustomer(orgId, deleted) {
     businessName: org.name,
     alias: org.alias,
     salesforceId: attrs.salesforceId?.[0] || null,
-    isActive: attrs.isActive?.[0] === "true",
+    isActive: org.enabled, // native Keycloak field, not a custom attribute - see README
     contract: parseContract(org),
     updatedAt: nowIso(),
   });
