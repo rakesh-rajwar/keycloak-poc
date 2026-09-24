@@ -1,7 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
 import { db } from "./db.js";
-import { handleAdminEvent } from "./syncHandlers.js";
+import { handleAdminEvent, resyncAll } from "./syncHandlers.js";
 import { dashboardHtml } from "./dashboard.js";
 import { adminFormHtml } from "./adminForm.js";
 import { keycloakAdmin } from "./keycloakAdmin.js";
@@ -82,6 +82,15 @@ app.get("/state", (_req, res) => {
 
 app.get("/events", (_req, res) => {
   res.json(db.all("webhookEvents"));
+});
+
+app.post("/admin/resync", async (_req, res) => {
+  try {
+    const summary = await resyncAll();
+    res.json({ ok: true, ...summary });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 app.get("/healthz", (_req, res) => res.json({ status: "ok" }));

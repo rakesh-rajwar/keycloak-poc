@@ -25,15 +25,28 @@ function parseContract(org) {
   }
 }
 
+// Deleting an Organization in Keycloak does not fire separate
+// ORGANIZATION_GROUP/ORGANIZATION_GROUP_MEMBERSHIP DELETE events for its
+// child org-groups - they just vanish upstream. Without this, deleting a
+// customer left orphaned rows behind in workspaces/userWorkspaces (found
+// live: re-seeding a deleted customer produced duplicate stale rows
+// alongside the fresh ones). Mirrors the cascade Keycloak itself performs.
+function cascadeDeleteCustomer(orgId) {
+  db.removeWhere("workspaces", (w) => w.customerId === orgId);
+  db.removeWhere("userWorkspaces", (uw) => uw.customerId === orgId);
+}
+
 async function syncCustomer(orgId, deleted) {
   if (deleted) {
     db.remove("customers", "kcOrgId", orgId);
-    return `customer ${orgId} removed`;
+    cascadeDeleteCustomer(orgId);
+    return `customer ${orgId} removed (cascaded to its workspaces/memberships)`;
   }
   const org = await keycloakAdmin.getOrganization(orgId);
   if (!org) {
     db.remove("customers", "kcOrgId", orgId);
-    return `customer ${orgId} not found upstream, removed locally`;
+    cascadeDeleteCustomer(orgId);
+    return `customer ${orgId} not found upstream, removed locally (cascaded)`;
   }
   const attrs = org.attributes || {};
   db.upsert("customers", "kcOrgId", {
@@ -108,12 +121,14 @@ async function resolveWorkspaceId(orgId, groupId, event) {
 async function syncWorkspace(orgId, groupId, deleted) {
   if (deleted) {
     db.remove("workspaces", "kcGroupId", groupId);
-    return `workspace ${groupId} removed`;
+    db.removeWhere("userWorkspaces", (uw) => uw.workspaceId === groupId);
+    return `workspace ${groupId} removed (cascaded to its memberships)`;
   }
   const group = await keycloakAdmin.getOrganizationGroup(orgId, groupId);
   if (!group) {
     db.remove("workspaces", "kcGroupId", groupId);
-    return `workspace ${groupId} not found upstream, removed locally`;
+    db.removeWhere("userWorkspaces", (uw) => uw.workspaceId === groupId);
+    return `workspace ${groupId} not found upstream, removed locally (cascaded)`;
   }
   const attrs = group.attributes || {};
   let featureOverrides = null;
@@ -182,6 +197,97 @@ async function syncUser(userId, deleted) {
     updatedAt: nowIso(),
   });
   return `user "${user.email}" synced`;
+}
+
+// Full reconciliation: walks every Organization -> its org-groups -> their
+// members currently in Keycloak and rebuilds customers/workspaces/users/
+// userWorkspaces from scratch (wipe-and-rebuild, via db.replaceAll - not
+// additive upserts), discarding any local row that no longer has a
+// matching upstream entity. Exists because Keycloak doesn't fire cascade
+// DELETE events for an org-group's children when its parent Organization
+// is deleted (see cascadeDeleteCustomer) - this is the repair tool for
+// whatever that (or a missed webhook delivery) has already left behind.
+export async function resyncAll() {
+  const customers = [];
+  const workspaces = [];
+  const usersById = new Map();
+  const userWorkspaces = [];
+
+  // The list endpoints (organizations, organizations/{id}/groups) return
+  // abbreviated representations with no `attributes` field at all -
+  // verified live. Only the single-entity detail GET has it, so each org
+  // and each group needs a follow-up detail fetch.
+  const orgSummaries = (await keycloakAdmin.listOrganizations()) || [];
+  for (const orgSummary of orgSummaries) {
+    const org = (await keycloakAdmin.getOrganization(orgSummary.id)) || orgSummary;
+    const attrs = org.attributes || {};
+    const contract = parseContract(org);
+    customers.push({
+      kcOrgId: org.id,
+      businessName: org.name,
+      alias: org.alias,
+      salesforceId: attrs.salesforceId?.[0] || null,
+      isActive: org.enabled,
+      contract,
+      updatedAt: nowIso(),
+    });
+
+    const groupSummaries = (await keycloakAdmin.getOrganizationGroups(org.id)) || [];
+    for (const groupSummary of groupSummaries) {
+      const group = (await keycloakAdmin.getOrganizationGroup(org.id, groupSummary.id)) || groupSummary;
+      const gAttrs = group.attributes || {};
+      let featureOverrides = null;
+      if (gAttrs.featureOverrides?.[0]) {
+        try {
+          featureOverrides = JSON.parse(gAttrs.featureOverrides[0]);
+        } catch {
+          featureOverrides = null;
+        }
+      }
+      workspaces.push({
+        kcGroupId: group.id,
+        customerId: org.id,
+        businessName: group.name,
+        isDefault: gAttrs.isDefault?.[0] === "true",
+        featureOverrides,
+        updatedAt: nowIso(),
+      });
+
+      const enabledFeatures = effectiveFeatures(contract, featureOverrides);
+      const members = (await keycloakAdmin.getOrganizationGroupMembers(org.id, group.id)) || [];
+      for (const user of members) {
+        usersById.set(user.id, {
+          kcUserId: user.id,
+          email: user.email || null,
+          name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username,
+          updatedAt: nowIso(),
+        });
+        userWorkspaces.push({
+          id: `${group.id}:${user.id}`,
+          workspaceId: group.id,
+          customerId: org.id,
+          userId: user.id,
+          email: user.email,
+          enabledFeatures,
+          updatedAt: nowIso(),
+        });
+      }
+    }
+  }
+
+  db.replaceAll({
+    customers,
+    workspaces,
+    users: [...usersById.values()],
+    userWorkspaces,
+  });
+
+  return {
+    customers: customers.length,
+    workspaces: workspaces.length,
+    users: usersById.size,
+    userWorkspaces: userWorkspaces.length,
+  };
 }
 
 export async function handleAdminEvent(event) {

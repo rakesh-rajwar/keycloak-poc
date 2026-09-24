@@ -76,13 +76,18 @@ Watch http://localhost:4000 update within a couple seconds of each change — th
 
 ### Seeding a richer multi-tenant dataset
 
-`demo.sh` is a single-customer walkthrough. `scripts/seed.js` (`node scripts/seed.js` — plain Admin REST calls, no deps) adds three more customers on top, deliberately varied:
+`demo.sh` (Acme Corp) and `scripts/seed.js` (`node scripts/seed.js` — plain Admin REST calls, no deps; three more customers) together give 4 customers, each with **2-3 workspaces**, each customer having at least one workspace on the full contract and at least one restricted via `featureOverrides`:
 
-- **Globex Corporation** — one customer, one workspace, no overrides (the simple case)
-- **Initech** — two workspaces: `initech-default` (full contract) and `initech-finance`, an internal team restricted via `featureOverrides` (`review.rep`, `analytics-premium` turned off)
+- **Acme Corp** — `acme-corp-default` (full contract) / `acme-corp-priority` (`mentions.360` off)
+- **Globex Corporation** — `globex-default` (full contract) / `globex-limited` (`mentions.cm` off)
+- **Initech** — `initech-default` (full contract) / `initech-finance`, an internal team (`review.rep`, `analytics-premium` off)
 - **Umbrella PR Agency** — three workspaces, one per sub-client (`umbrella-client-northwind`/`wayne`/`stark`), each with a *different* `featureOverrides` — the exact multi-tenant-under-one-customer case `workspaces.featureOverrides`'s own schema comment calls out ("isolate data and hold users under a customer (for PR agencies, etc.)")
 
-Feature keys throughout are copied from `claim`'s actual `prisma/seed.js` `FEATURE_CATALOG` (`mentions`/`mentions.cm`/`mentions.360`, `contacts.prmanager`, `review.rep`, `geo`/`analytics-basic`/`analytics-premium`), not invented — the checkbox editor below reflects the same catalog. Additive and safe to run alongside `demo.sh`; re-running it against already-seeded data will fail on duplicate org aliases, same constraint as `demo.sh`.
+Feature keys throughout are copied from `claim`'s actual `prisma/seed.js` `FEATURE_CATALOG` (`mentions`/`mentions.cm`/`mentions.360`, `contacts.prmanager`, `review.rep`, `geo`/`analytics-basic`/`analytics-premium`), not invented — the checkbox editor below reflects the same catalog. `demo.sh` and `seed.js` are each additive and safe to run alongside each other; re-running either against already-seeded data will fail on duplicate org aliases.
+
+### Repairing orphaned local rows: `POST /admin/resync` / the dashboard's "Full resync" button
+
+Found live: deleting an Organization in Keycloak does **not** fire separate `ORGANIZATION_GROUP`/`ORGANIZATION_GROUP_MEMBERSHIP` delete events for its child org-groups — they just vanish upstream. `syncHandlers.js` now cascades those deletes locally when it does see an `ORGANIZATION`/`ORGANIZATION_GROUP` delete event, but anything already orphaned before that fix (or from a webhook delivery that was ever missed) needs a repair path. `resyncAll()` walks every Organization → its org-groups → their members currently in Keycloak and rebuilds `customers`/`workspaces`/`users`/`userWorkspaces` from scratch (wipe-and-rebuild, not additive upserts) — anything local with no upstream match is discarded. One non-obvious wrinkle it has to work around: Keycloak's **list** endpoints (`/organizations`, `/organizations/{id}/groups`) return abbreviated representations with no `attributes` field at all — the full `contract`/`featureOverrides` data only comes back from the single-entity detail GET, so a full resync means one extra fetch per org and per group, not just walking the list responses directly.
 
 ### Editing contract features without hand-typing JSON
 

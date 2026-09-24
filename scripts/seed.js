@@ -66,6 +66,11 @@ const SEED = [
         isDefault: true,
         users: [{ username: "alice.walker", email: "alice.walker@globex.example.com", firstName: "Alice", lastName: "Walker" }],
       },
+      {
+        name: "globex-limited",
+        featureOverrides: { "mentions.cm": false },
+        users: [{ username: "sam.patel", email: "sam.patel@globex.example.com", firstName: "Sam", lastName: "Patel" }],
+      },
     ],
   },
   {

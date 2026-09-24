@@ -41,6 +41,18 @@ function remove(table, keyField, keyValue) {
   persist();
 }
 
+function removeWhere(table, predicate) {
+  state[table] = state[table].filter((r) => !predicate(r));
+  persist();
+}
+
+// Wipe-and-rebuild for reconciliation (see syncHandlers.resyncAll) - normal
+// event handling never calls this, only an explicit full resync.
+function replaceAll(tables) {
+  for (const [table, rows] of Object.entries(tables)) state[table] = rows;
+  persist();
+}
+
 function all(table) {
   return state[table];
 }
@@ -55,4 +67,4 @@ function appendEvent(record) {
   persist();
 }
 
-export const db = { upsert, remove, all, find, appendEvent };
+export const db = { upsert, remove, removeWhere, replaceAll, all, find, appendEvent };

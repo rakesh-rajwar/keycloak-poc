@@ -59,10 +59,12 @@ async function updateOrganization(orgId, representation) {
 }
 
 export const keycloakAdmin = {
+  listOrganizations: () => adminFetch(`/organizations`),
   getOrganization: (orgId) => adminFetch(`/organizations/${orgId}`),
   updateOrganization,
   getOrganizationGroups: (orgId) => adminFetch(`/organizations/${orgId}/groups`),
   getOrganizationGroup: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}`),
+  getOrganizationGroupMembers: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}/members`),
   getGroup: (groupId) => adminFetch(`/groups/${groupId}`),
   getUser: (userId) => adminFetch(`/users/${userId}`),
   getUserByUsername,

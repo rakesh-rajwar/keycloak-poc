@@ -17,11 +17,15 @@ export const dashboardHtml = `<!doctype html>
   .status-ignored { color: #6e7681; }
   code { background: #161b22; padding: .1rem .3rem; border-radius: 3px; }
   .badge { display:inline-block; padding: .1rem .5rem; border-radius: 999px; background:#1f2937; font-size:.75rem; }
+  button { background: #1f6feb; color: white; border: none; padding: .4rem .9rem; border-radius: 4px; cursor: pointer; font-size: .85rem; }
+  button:hover { background: #2a7ae2; }
+  #resync-status { margin-left: .6rem; font-size: .85rem; color: #8b949e; }
 </style>
 </head>
 <body>
 <h1>Phase 1 PoC &mdash; downstream consumer-app local tables</h1>
 <p>This page shows <em>only</em> data written by this app's webhook handler. Nothing here is edited directly &mdash; it exists purely because Keycloak fired an Admin Event Webhook. Refreshes every 3s.</p>
+<p><button id="resync-btn">Full resync</button><span id="resync-status"></span> &mdash; rebuilds every table below from Keycloak's current state, discarding anything local that no longer has an upstream match (repairs orphans from events Keycloak never fires, e.g. deleting an Organization doesn't cascade-delete its org-groups as separate events).</p>
 
 <h2>Customers</h2>
 <table id="customers"></table>
@@ -68,6 +72,17 @@ async function refresh() {
   }));
   renderTable(document.getElementById('events'), evRows, ['receivedAt', 'resourceType', 'operationType', 'status', 'detail']);
 }
+document.getElementById('resync-btn').addEventListener('click', async () => {
+  const statusEl = document.getElementById('resync-status');
+  statusEl.textContent = 'resyncing...';
+  const res = await fetch('/admin/resync', { method: 'POST' });
+  const body = await res.json();
+  statusEl.textContent = res.ok
+    ? \`done: \${body.customers} customers, \${body.workspaces} workspaces, \${body.users} users, \${body.userWorkspaces} memberships\`
+    : \`failed: \${body.error}\`;
+  refresh();
+});
+
 refresh();
 setInterval(refresh, 3000);
 </script>
