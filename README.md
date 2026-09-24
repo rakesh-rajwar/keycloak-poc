@@ -72,6 +72,10 @@ Now either:
 
 Watch http://localhost:4000 update within a couple seconds of each change — that's the webhook firing and the consumer-app syncing its local tables, with zero direct DB access and zero app-specific Keycloak polling.
 
+### Editing contract features without hand-typing JSON
+
+Keycloak's own Attributes tab (both for Organizations and Groups) is a fixed generic key/value text editor — there's no way to make a specific attribute render as a checkbox list through config or theming. **http://localhost:4000/admin** is a small purpose-built form instead: pick a customer, check/uncheck features, it translates the selection into `contract.featureSets` JSON and PATCHes the Organization via the Admin REST API — same interaction pattern as `claim`'s own contract-features editor (`views/partials/contract-features-edit.eta`): parent/child checkboxes, single-child parents toggle in lockstep with their one child, multi-child parents require at least one enabled child. It deliberately skips GUM's impact-preview modal (which customers/users would be affected) since that needs the reachability engine this PoC doesn't reproduce — saves apply directly, then flow back through the normal webhook sync like every other change here.
+
 Raw event log (useful for debugging payload shape): `curl -s localhost:4000/events | jq`
 Current local-table state: `curl -s localhost:4000/state | jq`
 
@@ -92,6 +96,7 @@ Two real gaps in Keycloak's own event shape, found only by triggering each event
 - `WEBHOOK_VERIFY=true` by default, confirmed working against a live instance (`X-Keycloak-Signature: <hex HMAC-SHA256>` of the raw body — see `consumer-app/src/server.js`). Still PoC-grade: the shared secret is a plaintext demo value, not pulled from a vault.
 - consumer-app's "local DB" is a JSON file, not a real RDBMS — swap `src/db.js` for Postgres/MySQL in a real downstream app; the sync *logic* (`syncHandlers.js`) is what's meant to be reusable.
 - No retry/dead-letter handling if the consumer-app is down when a webhook fires — Phase 1 in production needs at-least-once delivery semantics or a periodic reconciliation job as a backstop.
+- `/admin` (the contract-features editor) has **no authentication at all** — anyone who can reach consumer-app can edit any customer's contract. A real Ops tool needs the same auth story GUM's own UI has (session auth + permission checks in `src/plugins/authorize.ts`/`abilities.ts`).
 
 ## Repo layout
 
@@ -106,6 +111,8 @@ consumer-app/
   src/keycloakAdmin.js     # Admin REST client (client-credentials)
   src/db.js                # local "table" storage (JSON file, swap for real DB)
   src/dashboard.js         # live HTML view of the synced tables
+  src/adminForm.js         # /admin - checkbox editor for contract.featureSets
+  src/featureCatalog.js    # static parent/child feature catalog fixture
 scripts/
   demo.sh                  # scripts the "ops admin" actions via REST, GUM-shaped
   register-webhook.sh      # registers consumer-app as a webhook subscriber

@@ -3,6 +3,8 @@ import crypto from "node:crypto";
 import { db } from "./db.js";
 import { handleAdminEvent } from "./syncHandlers.js";
 import { dashboardHtml } from "./dashboard.js";
+import { adminFormHtml } from "./adminForm.js";
+import { keycloakAdmin } from "./keycloakAdmin.js";
 
 const PORT = process.env.PORT || 4000;
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "";
@@ -86,6 +88,37 @@ app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
 app.get("/", (_req, res) => {
   res.type("html").send(dashboardHtml);
+});
+
+app.get("/admin", (_req, res) => {
+  res.type("html").send(adminFormHtml);
+});
+
+app.post("/admin/customers/:orgId/contract-features", express.json(), async (req, res) => {
+  const { orgId } = req.params;
+  const enabled = Array.isArray(req.body?.enabled) ? req.body.enabled : null;
+  if (!enabled) return res.status(400).json({ error: "body must be { enabled: string[] }" });
+
+  const org = await keycloakAdmin.getOrganization(orgId);
+  if (!org) return res.status(404).json({ error: "customer not found" });
+
+  let contract = {};
+  try {
+    contract = JSON.parse(org.attributes?.contract?.[0] || "{}");
+  } catch {
+    contract = {};
+  }
+  contract.featureSets = enabled;
+
+  const attributes = { ...(org.attributes || {}) };
+  attributes.contract = [JSON.stringify(contract)];
+
+  try {
+    await keycloakAdmin.updateOrganization(orgId, { ...org, attributes });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
 });
 
 app.listen(PORT, () => {

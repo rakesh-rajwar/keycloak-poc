@@ -46,8 +46,21 @@ async function getUserByUsername(username) {
   return results?.[0] || null;
 }
 
+async function updateOrganization(orgId, representation) {
+  const token = await getToken();
+  const res = await fetch(`${BASE_URL}/admin/realms/${REALM}/organizations/${orgId}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(representation),
+  });
+  if (!res.ok) {
+    throw new Error(`Admin API PUT organizations/${orgId} failed: ${res.status} ${await res.text()}`);
+  }
+}
+
 export const keycloakAdmin = {
   getOrganization: (orgId) => adminFetch(`/organizations/${orgId}`),
+  updateOrganization,
   getOrganizationGroups: (orgId) => adminFetch(`/organizations/${orgId}/groups`),
   getOrganizationGroup: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}`),
   getGroup: (groupId) => adminFetch(`/groups/${groupId}`),
