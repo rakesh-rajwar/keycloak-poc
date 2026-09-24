@@ -59,6 +59,8 @@ Wait for Keycloak to report healthy (`docker compose ps`), then register the web
 ./scripts/register-webhook.sh
 ```
 
+Registration is REST-only — confirmed there's no Admin Console page for it (only the *event listener* toggle in Realm Settings → Events has a UI; the actual subscription URL/secret does not). It's additive, not a single slot: `./scripts/register-webhook.sh <url> <secret> [eventTypes]` adds a second (or third...) independent consumer without touching the first — useful if another app needs to subscribe too. `eventTypes` is comma-separated, default `*`.
+
 Open the downstream app's live view: **http://localhost:4000** — this table is empty until Keycloak fires events.
 
 Now either:
