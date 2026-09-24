@@ -72,6 +72,16 @@ Now either:
 
 Watch http://localhost:4000 update within a couple seconds of each change — that's the webhook firing and the consumer-app syncing its local tables, with zero direct DB access and zero app-specific Keycloak polling.
 
+### Seeding a richer multi-tenant dataset
+
+`demo.sh` is a single-customer walkthrough. `scripts/seed.js` (`node scripts/seed.js` — plain Admin REST calls, no deps) adds three more customers on top, deliberately varied:
+
+- **Globex Corporation** — one customer, one workspace, no overrides (the simple case)
+- **Initech** — two workspaces: `initech-default` (full contract) and `initech-finance`, an internal team restricted via `featureOverrides` (`review.rep`, `analytics-premium` turned off)
+- **Umbrella PR Agency** — three workspaces, one per sub-client (`umbrella-client-northwind`/`wayne`/`stark`), each with a *different* `featureOverrides` — the exact multi-tenant-under-one-customer case `workspaces.featureOverrides`'s own schema comment calls out ("isolate data and hold users under a customer (for PR agencies, etc.)")
+
+Feature keys throughout are copied from `claim`'s actual `prisma/seed.js` `FEATURE_CATALOG` (`mentions`/`mentions.cm`/`mentions.360`, `contacts.prmanager`, `review.rep`, `geo`/`analytics-basic`/`analytics-premium`), not invented — the checkbox editor below reflects the same catalog. Additive and safe to run alongside `demo.sh`; re-running it against already-seeded data will fail on duplicate org aliases, same constraint as `demo.sh`.
+
 ### Editing contract features without hand-typing JSON
 
 Keycloak's own Attributes tab (both for Organizations and Groups) is a fixed generic key/value text editor — there's no way to make a specific attribute render as a checkbox list through config or theming. **http://localhost:4000/admin** is a small purpose-built form instead: pick a customer, check/uncheck features, it translates the selection into `contract.featureSets` JSON and PATCHes the Organization via the Admin REST API — same interaction pattern as `claim`'s own contract-features editor (`views/partials/contract-features-edit.eta`): parent/child checkboxes, single-child parents toggle in lockstep with their one child, multi-child parents require at least one enabled child. It deliberately skips GUM's impact-preview modal (which customers/users would be affected) since that needs the reachability engine this PoC doesn't reproduce — saves apply directly, then flow back through the normal webhook sync like every other change here.
@@ -115,5 +125,6 @@ consumer-app/
   src/featureCatalog.js    # static parent/child feature catalog fixture
 scripts/
   demo.sh                  # scripts the "ops admin" actions via REST, GUM-shaped
+  seed.js                  # adds 3 more varied customers/workspaces/users
   register-webhook.sh      # registers consumer-app as a webhook subscriber
 ```
