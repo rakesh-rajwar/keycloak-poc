@@ -47,7 +47,7 @@ port `8080`.
 ```
 PORT=4000
 KEYCLOAK_BASE_URL=<keycloak-poc-idp's public URL from step 1>
-KEYCLOAK_REALM=onclusive-poc
+KEYCLOAK_REALM=360-platform
 KEYCLOAK_CLIENT_ID=webhook-consumer
 KEYCLOAK_CLIENT_SECRET=poc-webhook-consumer-secret
 WEBHOOK_SECRET=poc-shared-webhook-secret

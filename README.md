@@ -1,49 +1,46 @@
-# Phase 1 PoC — Keycloak as Out-of-Band Source of Truth
+# 360 Platform PoC — Keycloak as Unified Identity & Authorization Master
 
-Proof of concept for **Phase 1** of [Centralizing Identity, Memberships & Authorization with Keycloak](https://onclusive.atlassian.net/wiki/spaces/Applicatio/pages/5590646787).
+Proof of concept for the **"Unified Authorization & Identity Migration"** plan: Keycloak as the centralized customer/workspace/user hierarchy and authorization master, Auth0 staying in place for login (that migration is explicitly Phase 4, out of scope here), with static entitlements synced out to downstream apps via Admin Event Webhooks.
 
-Phase 1 scope, from the proposal:
-
-- Users keep authenticating against **Auth0** — nothing about login changes.
-- **Ops** uses the **Keycloak Admin UI** (or REST API) to manually create Organizations, set subscription/plan attributes, and manage user memberships.
+- Users keep authenticating against **Auth0** — nothing about login changes (Phase 1-3 of the plan).
+- **Ops** (or, later, customers themselves via a portal) uses the **Keycloak Admin API** to create customers, set entitlements, and manage sub-team/agency workspaces.
 - Keycloak fires **Admin Event Webhooks** on every change.
 - **Downstream consumer apps** listen for those webhooks and keep their own local DB tables in sync — no direct DB writes from Keycloak, no app rewrite required.
 
-This PoC stands up that whole loop end to end so you can watch it happen.
+This PoC stands up that whole loop end to end, seeded with the plan doc's own worked examples, so you can watch it happen.
 
 ## Stack
 
 | service | role |
 |---|---|
 | `postgres` | Keycloak's backing store |
-| `keycloak` | Keycloak 26.6.3 + the [`keycloak-events`](https://github.com/p2-inc/keycloak-events) extension (built from source at `v0.62`, the release matching this Keycloak version — real HTTP webhook delivery for admin events), Organizations enabled (GA since 26.0), `onclusive-poc` realm pre-imported |
-| `consumer-app` | Stand-in for a "legacy downstream app." Receives webhook calls, resolves the change against the Keycloak Admin REST API, and upserts its own local tables (`customers`, `workspaces`, `users`, `userWorkspaces`) — this is the thing Phase 1 is actually validating |
+| `keycloak` | Keycloak 26.6.3 + the [`keycloak-events`](https://github.com/p2-inc/keycloak-events) extension (built from source at `v0.62`, the release matching this Keycloak version — real HTTP webhook delivery for admin events), Organizations enabled (GA since 26.0), realm `360-platform` pre-imported |
+| `consumer-app` | Stand-in for a "legacy downstream app" (the plan doc's Phase 1 point 3, "Legacy Application Sync Handlers"). Receives webhook calls, resolves the change against the Keycloak Admin REST API, and upserts its own local tables — this is the thing the plan is actually validating. Also hosts a small **Customer Admin Portal** (`/admin`), standing in for the doc's Phase 1 point 4 ("Build Customer Admin Portal in 360 Shell") until an actual 360 Micro-Frontend Shell exists |
 
-## Data model: mirrors GUM (`claim`), not a generic example
+## Data model: the plan doc's own vocabulary and worked examples, not invented ones
 
-Onclusive already has a real, working system for this — [`shared-services/claim`](../shared-services/claim) ("GUM" — Global User Management) — with its own MySQL tables and a webhook fan-out engine (`src/utils/event-fanout.ts`). Rather than invent placeholder entities, this PoC's Keycloak model mirrors GUM's real hierarchy 1:1, so it doubles as a concrete answer to "how would this hierarchy actually work in Keycloak":
-
-| GUM (`claim`) entity | Keycloak equivalent used here |
+| Plan doc concept | Keycloak equivalent used here |
 |---|---|
-| `customers` (businessName, salesforceId, isActive, inactiveReason) | Native **Organization** — `businessName`→`name`, `isActive`→**Keycloak's own `enabled` field** (not a custom attribute — see below), `salesforceId`/`contract` as `attributes` (verified live: Organizations accept arbitrary string-array attributes) |
-| `contracts` (1:1 per customer — name, dates, featureSets/permissions/baseLimits) | No native Keycloak entity, so flattened onto the customer Organization as one `contract` JSON-string attribute |
-| `workspaces` (customerId FK, isDefault, featureOverrides) | **Organization-scoped Group** — Keycloak 26.6+'s `/organizations/{orgId}/groups`, a structural match for `workspaces.customerId` (replaces an earlier, less faithful design that linked a plain top-level group back to an org via attribute) |
-| `userWorkspaces` (M:N users↔workspaces) | Membership in the organization-scoped group. **Caveat found by testing**: Keycloak requires the user to already be a plain Organization member before they can be added to one of its groups (`"User is not member of the organization"` if not) — GUM itself has no users↔customers table, so that prerequisite membership is pure Keycloak plumbing with nothing to sync; `syncHandlers.js` explicitly no-ops it |
-| `features`, `contractFeatures`, `contractTemplates` | Out of scope — app-side reference/catalog data, not identity data. The consumer-app instead computes `enabledFeatures` per `userWorkspace` by reading the customer's `contract.featureSets`, filtered by the workspace's own `featureOverrides` — the same relationship GUM's schema comment describes ("Override inherited Contract features") |
+| Customer (Phase 0's "Organization/Tenant record") | Native **Organization** — `businessName`→`name`, `isActive`→Keycloak's own `enabled` field (a native field, not a custom attribute — verified: Organizations accept arbitrary string-array attributes for everything else) |
+| **Legacy Mapping Dictionary** (Phase 0, point 3) | An `legacyMapping` JSON attribute on the Organization, holding `master_account_id`/`master_account_name`/`legacy_app_mappings` verbatim from the doc's own example |
+| **Static Entitlements** (Phase 1/3's core architectural split — "Centralized in Keycloak") | An `entitlements` JSON attribute on the Organization: `{ web_media: {access,tier,search_limit}, social_media: {access,role} }`, the doc's own `USER_ENTITLEMENT_UPDATED` payload shape |
+| Internal sub-team / invited external agency (Phase 0 point 4, Phase 1 point 4) | **Organization-scoped Group** (Keycloak 26.6+'s `/organizations/{orgId}/groups`) — `isExternal` attribute distinguishes an invited agency from an internal sub-team; `featureOverrides` restricts it below the customer's entitlements |
+| **Dynamic Usage Metering** (Phase 3 — "Maintained in Local App DBs", *never* centralized) | A `usage` field on each `userWorkspace` row, mutated **only** by `POST /admin/user-workspaces/:id/simulate-usage` — never read from or written to Keycloak. See "The static/dynamic split" below |
+| User↔workspace membership | Membership in the organization-scoped group. **Caveat found by testing**: Keycloak requires the user to already be a plain Organization member before they can be added to one of its groups (`"User is not member of the organization"` if not) — there's no local table for that prerequisite membership itself, `syncHandlers.js` explicitly no-ops it |
 
-This answers one of the proposal doc's open questions with a concrete design — see [Proposed webhook payload / linkage schema](#proposed-webhook-payload--linkage-schema) below.
+### The static/dynamic split (Phase 3's core architectural concept)
+
+The plan doc is explicit about why this split exists: *"To avoid severe database write-locks and latency bottlenecks in the central identity provider"* — static entitlements (plan caps like `search_limit: 100`) live in Keycloak; the actual usage counter (`current_month_searches: 42`) must never round-trip through it. This PoC enforces that as code, not just policy: every function in `syncHandlers.js` that recomputes `entitlements` explicitly preserves the sibling `usage` field by spreading the existing row rather than overwriting it — verified live, including through a full `resyncAll()` wipe-and-rebuild, which is the case most likely to accidentally clobber it.
 
 ### Why `isActive` uses Keycloak's native `enabled`, not a custom attribute
 
-Deliberate choice: prefer native Keycloak fields over custom attributes wherever one actually fits, rather than reinventing storage Keycloak already provides. `isActive` is stored as-is on the Organization's built-in `enabled` boolean rather than an `attributes.isActive` string.
+Deliberate choice: prefer native Keycloak fields over custom attributes wherever one actually fits. `isActive` is stored as-is on the Organization's built-in `enabled` boolean.
 
-One nuance worth being explicit about: this is **not** semantically identical to what `isActive` means in GUM today. GUM's `isActive` is a *computed* state — `checkAndUpdateAccountActivation()` derives it from five criteria (valid contract, contract reaches an enabled feature, has a workspace, has a user, etc.), auto-deactivates on failure, and only ever re-activates via an explicit manual check. Keycloak's `enabled` is just a flat admin on/off switch with no derivation logic behind it. This PoC doesn't reproduce GUM's activation-derivation rules (same scoping call as the reachability gap below) — `enabled` is simply the closest native field to point `isActive` at, not a re-implementation of the business rule.
+### `entitlements` recomputation on customer/workspace changes
 
-### `enabledFeatures` recomputation on contract/override changes
+Effective `entitlements` on a `userWorkspace` are recomputed whenever the customer's `entitlements` attribute changes (`ORGANIZATION` update) or a workspace's `featureOverrides` changes (`ORGANIZATION_GROUP` update), not just at the moment a membership is created — a per-module shallow merge (`{...customerModule, ...workspaceOverrideModule}`), so a workspace can restrict `access`, downgrade `tier`, or lower `search_limit` independently per module. Verified live both directions.
 
-`enabledFeatures` is recomputed for every affected `userWorkspace` whenever the customer's `contract` attribute changes (`ORGANIZATION` update → `recomputeEnabledFeaturesForCustomer()`) or a workspace's `featureOverrides` changes (`ORGANIZATION_GROUP` update → `recomputeEnabledFeaturesForWorkspace()`), not just at the moment a membership is created. Verified live both directions: changing a contract's `featureSets` updates every existing membership under that customer in the same webhook round-trip, and clearing a workspace's `featureOverrides` does the same for every membership in that workspace.
-
-This is a **bounded, on-demand recompute** — it re-derives the affected rows already stored locally — not GUM's full reachability-diffing engine (`event-fanout.ts`), which additionally diffs before/after snapshots to fire precise per-user `created`/`updated`/`deleted` events to *downstream apps*. This PoC's consumer-app updates its own table silently; it doesn't re-emit anything onward. A real Phase 1 implementation serving multiple downstream apps still needs that diffing/re-emission layer — this only fixes the "is the data itself stale" half of the gap, not the "does anyone get told about it" half.
+This is a **bounded, on-demand recompute** — it re-derives the affected rows already stored locally, it doesn't re-emit anything to *other* downstream apps. A real implementation serving multiple consumers still needs a diffing/re-emission layer on top of this.
 
 ## Run it
 
@@ -59,61 +56,66 @@ Wait for Keycloak to report healthy (`docker compose ps`), then register the web
 ./scripts/register-webhook.sh
 ```
 
-Registration is REST-only — confirmed there's no Admin Console page for it (only the *event listener* toggle in Realm Settings → Events has a UI; the actual subscription URL/secret does not). It's additive, not a single slot: `./scripts/register-webhook.sh <url> <secret> [eventTypes]` adds a second (or third...) independent consumer without touching the first — useful if another app needs to subscribe too. `eventTypes` is comma-separated, default `*`.
+Registration is REST-only — confirmed there's no Admin Console page for it (only the *event listener* toggle in Realm Settings → Events has a UI; the actual subscription URL/secret does not). It's additive, not a single slot: `./scripts/register-webhook.sh <url> <secret> [eventTypes]` adds a second (or third...) independent consumer without touching the first. `eventTypes` is comma-separated, default `*`.
 
-Open the downstream app's live view: **http://localhost:4000** — this table is empty until Keycloak fires events.
+Seed the plan doc's worked examples:
 
-Now either:
+```bash
+./scripts/demo.sh       # ACME Corporation - the doc's own Legacy Mapping Dictionary example verbatim,
+                         # plus Marketing/Legal sub-teams and one restricted external PR agency
+node scripts/seed.js    # two more customers with different entitlement mixes, for variety
+```
 
-- **Click through it yourself**: open the Keycloak Admin UI at **http://localhost:8080** (`admin` / `admin`), realm `onclusive-poc` → Organizations → create one (leave "Enabled" on), add `salesforceId`/`contract` attributes, create a group under it (a workspace), add a user as an org member first, then to the group — or
-- **Run the scripted version** of the same steps:
+Then:
 
-  ```bash
-  ./scripts/demo.sh
-  ```
+| What | URL |
+|---|---|
+| Keycloak Admin Console | http://localhost:8080 (`admin`/`admin`, realm `360-platform`) |
+| Downstream app's live view | http://localhost:4000 |
+| Customer Admin Portal | http://localhost:4000/admin |
 
 Watch http://localhost:4000 update within a couple seconds of each change — that's the webhook firing and the consumer-app syncing its local tables, with zero direct DB access and zero app-specific Keycloak polling.
 
-### Seeding a richer multi-tenant dataset
+### Customer Admin Portal: global entitlements + sub-group overrides
 
-`demo.sh` (Acme Corp) and `scripts/seed.js` (`node scripts/seed.js` — plain Admin REST calls, no deps; three more customers) together give 4 customers, each with **2-3 workspaces**, each customer having at least one workspace on the full contract and at least one restricted via `featureOverrides`:
+Keycloak's own Attributes tab (both for Organizations and Groups) is a fixed generic key/value text editor — no config or theming hook exists to render a specific attribute as anything richer. `/admin` is a small purpose-built form instead, with two sections matching the plan doc's two tiers:
 
-- **Acme Corp** — `acme-corp-default` (full contract) / `acme-corp-priority` (`mentions.360` off)
-- **Globex Corporation** — `globex-default` (full contract) / `globex-limited` (`mentions.cm` off)
-- **Initech** — `initech-default` (full contract) / `initech-finance`, an internal team (`review.rep`, `analytics-premium` off)
-- **Umbrella PR Agency** — three workspaces, one per sub-client (`umbrella-client-northwind`/`wayne`/`stark`), each with a *different* `featureOverrides` — the exact multi-tenant-under-one-customer case `workspaces.featureOverrides`'s own schema comment calls out ("isolate data and hold users under a customer (for PR agencies, etc.)")
+- **Global entitlements (customer level)** — pick a customer, set `access`/`tier`/`search_limit` for Web Media and `access`/`role` for Social Media, save. PATCHes the Organization's `entitlements` attribute via the Admin REST API.
+- **Sub-group overrides (workspace level)** — pick a workspace, override any field below the customer's global value (a 3-state control: "(inherit)" / explicit value), save. PATCHes the org-scoped Group's `featureOverrides` attribute.
 
-Feature keys throughout are copied from `claim`'s actual `prisma/seed.js` `FEATURE_CATALOG` (`mentions`/`mentions.cm`/`mentions.360`, `contacts.prmanager`, `review.rep`, `geo`/`analytics-basic`/`analytics-premium`), not invented — the checkbox editor below reflects the same catalog. `demo.sh` and `seed.js` are each additive and safe to run alongside each other; re-running either against already-seeded data will fail on duplicate org aliases.
+Both flow back through the normal webhook sync (~2s), same as every other change in this PoC — including the `entitlements` recomputation for every affected `userWorkspace`, verified live by editing a `search_limit` and confirming it propagated to the affected user's row.
 
-### Repairing orphaned local rows: `POST /admin/resync` / the dashboard's "Full resync" button
+**Invite external PR agencies by email** (the plan doc's Phase 1 point 4): Keycloak Organizations has this natively — `POST /admin/realms/{realm}/organizations/{orgId}/members/invite-user` (email, firstName, lastName). Confirmed live: the endpoint is real and processes correctly (`org.keycloak.organization.admin.resource.OrganizationInvitationResource.inviteUser`), it only fails because this stack's dev Keycloak has no SMTP server configured to actually deliver the email. This PoC's seed data adds external agency members directly (same mechanic as any other member) rather than exercising the real invite-email flow, which would need a mail server (e.g. Mailpit) added to the stack — a reasonable next increment, not yet built.
 
-Found live: deleting an Organization in Keycloak does **not** fire separate `ORGANIZATION_GROUP`/`ORGANIZATION_GROUP_MEMBERSHIP` delete events for its child org-groups — they just vanish upstream. `syncHandlers.js` now cascades those deletes locally when it does see an `ORGANIZATION`/`ORGANIZATION_GROUP` delete event, but anything already orphaned before that fix (or from a webhook delivery that was ever missed) needs a repair path. `resyncAll()` walks every Organization → its org-groups → their members currently in Keycloak and rebuilds `customers`/`workspaces`/`users`/`userWorkspaces` from scratch (wipe-and-rebuild, not additive upserts) — anything local with no upstream match is discarded. One non-obvious wrinkle it has to work around: Keycloak's **list** endpoints (`/organizations`, `/organizations/{id}/groups`) return abbreviated representations with no `attributes` field at all — the full `contract`/`featureOverrides` data only comes back from the single-entity detail GET, so a full resync means one extra fetch per org and per group, not just walking the list responses directly.
+### `POST /admin/resync` / the dashboard's "Full resync" button
 
-### Editing contract features without hand-typing JSON
+Found live: deleting an Organization in Keycloak does **not** fire separate `ORGANIZATION_GROUP`/`ORGANIZATION_GROUP_MEMBERSHIP` delete events for its child org-groups — they just vanish upstream. `syncHandlers.js` cascades those deletes locally when it does see an `ORGANIZATION`/`ORGANIZATION_GROUP` delete event, but anything already orphaned before that (or from a missed webhook delivery) needs a repair path. `resyncAll()` walks every Organization → its org-groups → their members currently in Keycloak and rebuilds every table from scratch (wipe-and-rebuild, not additive upserts), **except** each `userWorkspace`'s `usage` counter, which is explicitly carried over — verified live through an actual resync.
 
-Keycloak's own Attributes tab (both for Organizations and Groups) is a fixed generic key/value text editor — there's no way to make a specific attribute render as a checkbox list through config or theming. **http://localhost:4000/admin** is a small purpose-built form instead: pick a customer, check/uncheck features, it translates the selection into `contract.featureSets` JSON and PATCHes the Organization via the Admin REST API — same interaction pattern as `claim`'s own contract-features editor (`views/partials/contract-features-edit.eta`): parent/child checkboxes, single-child parents toggle in lockstep with their one child, multi-child parents require at least one enabled child. It deliberately skips GUM's impact-preview modal (which customers/users would be affected) since that needs the reachability engine this PoC doesn't reproduce — saves apply directly, then flow back through the normal webhook sync like every other change here.
+One non-obvious wrinkle it has to work around: Keycloak's **list** endpoints (`/organizations`, `/organizations/{id}/groups`) return abbreviated representations with no `attributes` field at all — the full `entitlements`/`legacyMapping`/`featureOverrides` data only comes back from the single-entity detail GET, so a full resync means one extra fetch per org and per group.
 
 Raw event log (useful for debugging payload shape): `curl -s localhost:4000/events | jq`
 Current local-table state: `curl -s localhost:4000/state | jq`
 
-`scripts/demo.sh` creates "Acme Corp" by a fixed alias, so it's only idempotent against a fresh realm. To reset everything (Keycloak data, the extension's webhook registration, and the consumer-app's local tables) and start over: `docker compose down -v && docker compose up --build -d`, then re-run `register-webhook.sh` and `demo.sh`.
+`scripts/demo.sh` creates "ACME Corporation" by a fixed alias, so it's only idempotent against a fresh realm. To reset everything and start over: `docker compose down -v && docker compose up --build -d`, then re-run `register-webhook.sh`, `demo.sh`, and `seed.js`.
 
-## Proposed webhook payload / linkage schema
+## Webhook payload / linkage schema
 
-Answering the doc's question 2 ("what standard JSON payload schema should Keycloak emit via webhooks for app local sync?"): this PoC doesn't invent a new payload — it uses Keycloak's **native admin event shape** (`resourceType`, `operationType`, `resourcePath`, `representation`, plus the `keycloak-events` extension's HMAC signature header) and treats the event as a *change notification*, not a full snapshot. The consumer-app always re-fetches the authoritative object from the Admin REST API rather than trusting embedded event data (except to resolve an id missing from a collection-POST event's `resourcePath` — see below), which sidesteps versioning/drift issues if the event body's shape changes across Keycloak upgrades.
+This PoC's webhooks use Keycloak's **native admin event shape** (`resourceType`, `operationType`, `resourcePath`, `representation`, plus the `keycloak-events` extension's HMAC signature header), not the plan doc's proposed `USER_ENTITLEMENT_UPDATED` envelope — the consumer-app always re-fetches the authoritative object from the Admin REST API rather than trusting embedded event data.
 
-Two real gaps in Keycloak's own event shape, found only by triggering each event live and reading `/events`, that any consumer needs to handle:
-- **CREATE events on a collection endpoint have no id in `resourcePath`.** `POST /organizations/{orgId}/members` and `POST /organizations/{orgId}/groups` both fire events whose `resourcePath` stops at the collection name. The added member's id has to come from `event.details.username` (then a lookup); the created group's id from parsing `event.representation`. Every other verb (UPDATE/DELETE, and CREATE on a nested resource like `.../groups/{id}/members/{userId}`) does include the full id chain in `resourcePath`. `syncHandlers.js`'s `pathSegments()` + these two fallbacks are the reusable pattern here.
-- GUM's own webhook schema (`webhooks-v1.ts`) is a much stronger design worth comparing against: versioned (`schemaVersion`), a closed `EventType` enum (`customer.created`, `workspace.updated`, `grant.deleted`, …), stable `ids` keyed by GUM's own entity names, and a `changes: {field: {from, to}}` diff on updates. Keycloak's raw admin events give you none of that — just "something changed at this path." If Phase 1 downstream apps are expected to consume a *stable* contract long-term, wrapping Keycloak's raw events in a GUM-shaped envelope (translate `resourceType`+`operationType` → a GUM-style `event` enum) is worth more than exposing Keycloak's native event shape directly.
+Two real gaps in Keycloak's own event shape, found only by triggering each event live and reading `/events`:
+- **CREATE events on a collection endpoint have no id in `resourcePath`.** `POST /organizations/{orgId}/members` and `POST /organizations/{orgId}/groups` both fire events whose `resourcePath` stops at the collection name. The added member's id has to come from `event.details.username` (then a lookup); the created group's id from parsing `event.representation`. `syncHandlers.js`'s `pathSegments()` + these two fallbacks are the reusable pattern.
+- **If downstream apps need a stable, versioned contract**, translating Keycloak's raw events into the plan doc's own `USER_ENTITLEMENT_UPDATED` shape (`eventType`, `timestamp`, `userId`, `accountId`, `entitlements`) at the point they leave `consumer-app` — rather than each app parsing Keycloak's native shape itself — is a real, buildable next increment this PoC doesn't yet do.
 
 ## Known PoC simplifications (do not carry into production)
 
-- `admin`/`admin` Keycloak bootstrap credentials, and `poc-webhook-consumer-secret` / `poc-shared-webhook-secret` in plaintext in `docker-compose.yml`.
+- `admin`/`admin` Keycloak bootstrap credentials, and plaintext demo secrets in `docker-compose.yml`.
 - The `webhook-consumer` service account is granted the `realm-admin` composite role for simplicity. Scope this down to `view-users`, `view-realm`, `view-organizations` for real use.
-- `WEBHOOK_VERIFY=true` by default, confirmed working against a live instance (`X-Keycloak-Signature: <hex HMAC-SHA256>` of the raw body — see `consumer-app/src/server.js`). Still PoC-grade: the shared secret is a plaintext demo value, not pulled from a vault.
+- `WEBHOOK_VERIFY=true` by default, confirmed working against a live instance (`X-Keycloak-Signature: <hex HMAC-SHA256>` of the raw body).
 - consumer-app's "local DB" is a JSON file, not a real RDBMS — swap `src/db.js` for Postgres/MySQL in a real downstream app; the sync *logic* (`syncHandlers.js`) is what's meant to be reusable.
-- No retry/dead-letter handling if the consumer-app is down when a webhook fires — Phase 1 in production needs at-least-once delivery semantics or a periodic reconciliation job as a backstop.
-- `/admin` (the contract-features editor) has **no authentication at all** — anyone who can reach consumer-app can edit any customer's contract. A real Ops tool needs the same auth story GUM's own UI has (session auth + permission checks in `src/plugins/authorize.ts`/`abilities.ts`).
+- No retry/dead-letter handling if the consumer-app is down when a webhook fires.
+- `/admin` (the Customer Admin Portal) has **no authentication at all** — anyone who can reach consumer-app can edit any customer's entitlements. A real portal needs the roles the plan doc itself doesn't specify yet either.
+- Invite-by-email is confirmed to work at the Keycloak API level but isn't exercised end-to-end here (no SMTP server in the stack).
+- Phase 0 (reconciliation across real legacy app databases), Phase 2 (real Salesforce sync), and Phase 4 (real Auth0 bulk migration) are **not** attempted — each needs a real external system this PoC has no access to; simulating them with fake data wouldn't validate anything.
 
 ## Repo layout
 
@@ -121,17 +123,17 @@ Two real gaps in Keycloak's own event shape, found only by triggering each event
 docker-compose.yml
 keycloak/
   Dockerfile              # base Keycloak + keycloak-events webhook extension
-  import/onclusive-poc-realm.json   # realm, organizationsEnabled, service account client
+  import/360-platform-realm.json   # realm, organizationsEnabled, service account client
 consumer-app/
-  src/server.js           # webhook receiver + /state + /events + dashboard
-  src/syncHandlers.js      # per-resourceType sync logic, GUM-shaped (the reusable part)
-  src/keycloakAdmin.js     # Admin REST client (client-credentials)
-  src/db.js                # local "table" storage (JSON file, swap for real DB)
-  src/dashboard.js         # live HTML view of the synced tables
-  src/adminForm.js         # /admin - checkbox editor for contract.featureSets
-  src/featureCatalog.js    # static parent/child feature catalog fixture
+  src/server.js             # webhook receiver + /state + /events + dashboard + admin routes
+  src/syncHandlers.js        # per-resourceType sync logic, static/dynamic split (the reusable part)
+  src/keycloakAdmin.js       # Admin REST client (client-credentials)
+  src/db.js                  # local "table" storage (JSON file, swap for real DB)
+  src/dashboard.js           # live HTML view of the synced tables + usage simulator
+  src/adminForm.js           # /admin - Customer Admin Portal (global entitlements + sub-group overrides)
+  src/entitlementCatalog.js  # web_media/social_media module+field schema, from the plan doc's own example
 scripts/
-  demo.sh                  # scripts the "ops admin" actions via REST, GUM-shaped
-  seed.js                  # adds 3 more varied customers/workspaces/users
-  register-webhook.sh      # registers consumer-app as a webhook subscriber
+  demo.sh                    # seeds ACME Corporation per the plan doc's worked example
+  seed.js                    # adds 2 more varied customers/workspaces/users
+  register-webhook.sh        # registers consumer-app (or any other app) as a webhook subscriber
 ```

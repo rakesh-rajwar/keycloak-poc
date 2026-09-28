@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Registers a webhook subscriber on the onclusive-poc realm using the
+# Registers a webhook subscriber on the 360-platform realm using the
 # keycloak-events (phasetwo) extension's REST API.
 #
 # This is additive, not a single slot - each call creates a new, independent

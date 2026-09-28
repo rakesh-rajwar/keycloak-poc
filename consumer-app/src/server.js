@@ -103,24 +103,21 @@ app.get("/admin", (_req, res) => {
   res.type("html").send(adminFormHtml);
 });
 
-app.post("/admin/customers/:orgId/contract-features", express.json(), async (req, res) => {
+// "Global" entitlement editing - the customer's static entitlements
+// (Phase 1's "Static Entitlements (Centralized in Keycloak)"). Body:
+// { entitlements: { web_media: {access,tier,search_limit}, social_media: {access,role} } }
+app.post("/admin/customers/:orgId/entitlements", express.json(), async (req, res) => {
   const { orgId } = req.params;
-  const enabled = Array.isArray(req.body?.enabled) ? req.body.enabled : null;
-  if (!enabled) return res.status(400).json({ error: "body must be { enabled: string[] }" });
+  const entitlements = req.body?.entitlements;
+  if (!entitlements || typeof entitlements !== "object") {
+    return res.status(400).json({ error: "body must be { entitlements: {...} }" });
+  }
 
   const org = await keycloakAdmin.getOrganization(orgId);
   if (!org) return res.status(404).json({ error: "customer not found" });
 
-  let contract = {};
-  try {
-    contract = JSON.parse(org.attributes?.contract?.[0] || "{}");
-  } catch {
-    contract = {};
-  }
-  contract.featureSets = enabled;
-
   const attributes = { ...(org.attributes || {}) };
-  attributes.contract = [JSON.stringify(contract)];
+  attributes.entitlements = [JSON.stringify(entitlements)];
 
   try {
     await keycloakAdmin.updateOrganization(orgId, { ...org, attributes });
@@ -128,6 +125,42 @@ app.post("/admin/customers/:orgId/contract-features", express.json(), async (req
   } catch (err) {
     res.status(502).json({ error: err.message });
   }
+});
+
+// "Sub-group" (workspace) override editing - restricts what an internal
+// team or invited external agency gets versus the customer's full
+// entitlements. Body: { featureOverrides: { web_media: {access:false}, ... } }
+app.post("/admin/workspaces/:orgId/:groupId/overrides", express.json(), async (req, res) => {
+  const { orgId, groupId } = req.params;
+  const featureOverrides = req.body?.featureOverrides;
+  if (!featureOverrides || typeof featureOverrides !== "object") {
+    return res.status(400).json({ error: "body must be { featureOverrides: {...} }" });
+  }
+
+  const group = await keycloakAdmin.getOrganizationGroup(orgId, groupId);
+  if (!group) return res.status(404).json({ error: "workspace not found" });
+
+  const attributes = { ...(group.attributes || {}) };
+  attributes.featureOverrides = [JSON.stringify(featureOverrides)];
+
+  try {
+    await keycloakAdmin.updateOrganizationGroup(orgId, groupId, { ...group, attributes });
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(502).json({ error: err.message });
+  }
+});
+
+// Phase 3's "Dynamic Usage Metering (Maintained in Local App DBs)" -
+// purely local, never touches Keycloak. Simulates a legacy app
+// incrementing its own transactional counter after enforcing the static
+// entitlement + local usage check described in the plan doc.
+app.post("/admin/user-workspaces/:id/simulate-usage", express.json(), (req, res) => {
+  const uw = db.find("userWorkspaces", "id", req.params.id);
+  if (!uw) return res.status(404).json({ error: "userWorkspace not found" });
+  const usage = { ...uw.usage, current_month_searches: (uw.usage?.current_month_searches || 0) + 1 };
+  db.upsert("userWorkspaces", "id", { ...uw, usage });
+  res.json({ ok: true, usage });
 });
 
 app.listen(PORT, () => {

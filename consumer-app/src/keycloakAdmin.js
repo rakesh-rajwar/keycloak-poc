@@ -1,5 +1,5 @@
 const BASE_URL = process.env.KEYCLOAK_BASE_URL || "http://keycloak:8080";
-const REALM = process.env.KEYCLOAK_REALM || "onclusive-poc";
+const REALM = process.env.KEYCLOAK_REALM || "360-platform";
 const CLIENT_ID = process.env.KEYCLOAK_CLIENT_ID || "webhook-consumer";
 const CLIENT_SECRET = process.env.KEYCLOAK_CLIENT_SECRET || "";
 
@@ -46,24 +46,26 @@ async function getUserByUsername(username) {
   return results?.[0] || null;
 }
 
-async function updateOrganization(orgId, representation) {
+async function putJson(path, representation) {
   const token = await getToken();
-  const res = await fetch(`${BASE_URL}/admin/realms/${REALM}/organizations/${orgId}`, {
+  const res = await fetch(`${BASE_URL}/admin/realms/${REALM}${path}`, {
     method: "PUT",
     headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
     body: JSON.stringify(representation),
   });
   if (!res.ok) {
-    throw new Error(`Admin API PUT organizations/${orgId} failed: ${res.status} ${await res.text()}`);
+    throw new Error(`Admin API PUT ${path} failed: ${res.status} ${await res.text()}`);
   }
 }
 
 export const keycloakAdmin = {
   listOrganizations: () => adminFetch(`/organizations`),
   getOrganization: (orgId) => adminFetch(`/organizations/${orgId}`),
-  updateOrganization,
+  updateOrganization: (orgId, representation) => putJson(`/organizations/${orgId}`, representation),
   getOrganizationGroups: (orgId) => adminFetch(`/organizations/${orgId}/groups`),
   getOrganizationGroup: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}`),
+  updateOrganizationGroup: (orgId, groupId, representation) =>
+    putJson(`/organizations/${orgId}/groups/${groupId}`, representation),
   getOrganizationGroupMembers: (orgId, groupId) => adminFetch(`/organizations/${orgId}/groups/${groupId}/members`),
   getGroup: (groupId) => adminFetch(`/groups/${groupId}`),
   getUser: (userId) => adminFetch(`/users/${userId}`),

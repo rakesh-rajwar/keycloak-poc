@@ -1,10 +1,21 @@
 import { db } from "./db.js";
 import { keycloakAdmin } from "./keycloakAdmin.js";
 
-// Mirrors GUM's (claim) real hierarchy: customers -> workspaces ->
-// userWorkspaces <- users, with a customer's 1:1 contract flattened onto
-// the Keycloak Organization as a `contract` JSON attribute (Keycloak has
-// no native contract entity). See README "Data model" for the full mapping.
+// 360 Platform realm data model, per the "Unified Authorization & Identity
+// Migration" plan doc: customers -> workspaces (internal sub-teams or
+// invited external agencies) -> userWorkspaces <- users. A customer's
+// static entitlements (Phase 1's "Static Entitlements (Centralized in
+// Keycloak)") are flattened onto the Organization as an `entitlements`
+// JSON attribute; its Legacy Mapping Dictionary (Phase 0) as a separate
+// `legacyMapping` attribute. Neither has a native Keycloak entity.
+//
+// Per the doc's core architectural split, dynamic usage counters
+// (Phase 3's "Dynamic Usage Metering (Maintained in Local App DBs)") are
+// NEVER derived from or written to Keycloak - they live only in the
+// `usage` field on a userWorkspace row, mutated solely by
+// /admin/user-workspaces/:id/simulate-usage. Every function here that
+// upserts a userWorkspace preserves that field by spreading the existing
+// row rather than replacing it wholesale.
 
 const nowIso = () => new Date().toISOString();
 
@@ -15,8 +26,8 @@ function pathSegments(resourcePath) {
   return segments;
 }
 
-function parseContract(org) {
-  const raw = org.attributes?.contract?.[0];
+function parseJsonAttr(attrs, key) {
+  const raw = attrs?.[key]?.[0];
   if (!raw) return null;
   try {
     return JSON.parse(raw);
@@ -53,58 +64,67 @@ async function syncCustomer(orgId, deleted) {
     kcOrgId: org.id,
     businessName: org.name,
     alias: org.alias,
-    salesforceId: attrs.salesforceId?.[0] || null,
     isActive: org.enabled, // native Keycloak field, not a custom attribute - see README
-    contract: parseContract(org),
+    legacyMapping: parseJsonAttr(attrs, "legacyMapping"),
+    entitlements: parseJsonAttr(attrs, "entitlements"),
     updatedAt: nowIso(),
   });
-  const recomputed = recomputeEnabledFeaturesForCustomer(orgId);
-  return `customer "${org.name}" synced` + (recomputed ? `, recomputed enabledFeatures for ${recomputed} membership(s)` : "");
+  const recomputed = recomputeEntitlementsForCustomer(orgId);
+  return `customer "${org.name}" synced` + (recomputed ? `, recomputed entitlements for ${recomputed} membership(s)` : "");
 }
 
 // Keycloak requires org membership as a prerequisite for org-group
-// membership, but GUM has no users<->customers table (only
-// users<->workspaces via userWorkspaces) - there's nothing to sync here.
-// The USER handler below keeps the users catalog current regardless.
+// membership, but there's no users<->customers table in this model (only
+// users<->workspaces via userWorkspaces) - nothing to sync here. The USER
+// handler below keeps the users catalog current regardless.
 function ignoreOrganizationMembership(orgId) {
-  return `organization membership under customer ${orgId} is Keycloak plumbing only, no GUM equivalent - ignored`;
+  return `organization membership under customer ${orgId} is Keycloak plumbing only, no local equivalent - ignored`;
 }
 
-// Effective feature set for a workspace: the customer's contract
-// featureSets, minus any keys explicitly turned off in the workspace's own
-// featureOverrides - same relationship as workspaces.featureOverrides in
-// the real schema ("Override inherited Contract features").
-function effectiveFeatures(contract, featureOverrides) {
-  const base = contract?.featureSets || [];
-  if (!featureOverrides) return base;
-  return base.filter((key) => featureOverrides[key] !== false);
+// Effective entitlements for a workspace: the customer's static
+// entitlements, per-module-per-field overridden by whatever the
+// workspace's own featureOverrides sets (e.g. a restricted sub-team
+// losing web_media entirely, or downgraded to a lower tier) - a
+// shallow-per-module merge, not a flat array filter, since entitlements
+// now carry sub-fields (tier, search_limit, role) rather than being a
+// plain on/off feature key.
+function effectiveEntitlements(entitlements, featureOverrides) {
+  if (!entitlements) return {};
+  if (!featureOverrides) return entitlements;
+  const result = {};
+  for (const [module, value] of Object.entries(entitlements)) {
+    result[module] = { ...value, ...(featureOverrides[module] || {}) };
+  }
+  return result;
 }
 
-// Re-derives enabledFeatures for every already-synced userWorkspace under a
-// customer, so a contract change (new/removed featureSets) propagates to
-// existing memberships instead of only affecting ones created afterward.
-// Bounded, on-demand recomputation - not GUM's full reachability-diffing
-// engine (event-fanout.ts), just enough to stop the staleness the README
-// used to call out as a known gap.
-function recomputeEnabledFeaturesForCustomer(orgId) {
+function upsertUserWorkspaceEntitlements(uw, entitlements) {
+  // Preserve usage (the dynamic, local-only counter) - never touched here.
+  db.upsert("userWorkspaces", "id", { ...uw, entitlements, updatedAt: nowIso() });
+}
+
+// Re-derives entitlements for every already-synced userWorkspace under a
+// customer, so an entitlements change propagates to existing memberships
+// instead of only affecting ones created afterward. Bounded, on-demand
+// recomputation - not a full reachability-diffing engine, just enough to
+// avoid the staleness a previous version of this PoC had as a known gap.
+function recomputeEntitlementsForCustomer(orgId) {
   const customer = db.find("customers", "kcOrgId", orgId);
   const affected = db.all("userWorkspaces").filter((uw) => uw.customerId === orgId);
   for (const uw of affected) {
     const workspace = db.find("workspaces", "kcGroupId", uw.workspaceId);
-    const enabledFeatures = effectiveFeatures(customer?.contract, workspace?.featureOverrides);
-    db.upsert("userWorkspaces", "id", { ...uw, enabledFeatures, updatedAt: nowIso() });
+    upsertUserWorkspaceEntitlements(uw, effectiveEntitlements(customer?.entitlements, workspace?.featureOverrides));
   }
   return affected.length;
 }
 
 // Same idea, scoped to one workspace - covers a featureOverrides change.
-function recomputeEnabledFeaturesForWorkspace(groupId) {
+function recomputeEntitlementsForWorkspace(groupId) {
   const workspace = db.find("workspaces", "kcGroupId", groupId);
   const customer = db.find("customers", "kcOrgId", workspace?.customerId);
   const affected = db.all("userWorkspaces").filter((uw) => uw.workspaceId === groupId);
   for (const uw of affected) {
-    const enabledFeatures = effectiveFeatures(customer?.contract, workspace?.featureOverrides);
-    db.upsert("userWorkspaces", "id", { ...uw, enabledFeatures, updatedAt: nowIso() });
+    upsertUserWorkspaceEntitlements(uw, effectiveEntitlements(customer?.entitlements, workspace?.featureOverrides));
   }
   return affected.length;
 }
@@ -131,24 +151,17 @@ async function syncWorkspace(orgId, groupId, deleted) {
     return `workspace ${groupId} not found upstream, removed locally (cascaded)`;
   }
   const attrs = group.attributes || {};
-  let featureOverrides = null;
-  if (attrs.featureOverrides?.[0]) {
-    try {
-      featureOverrides = JSON.parse(attrs.featureOverrides[0]);
-    } catch {
-      featureOverrides = null;
-    }
-  }
   db.upsert("workspaces", "kcGroupId", {
     kcGroupId: group.id,
     customerId: orgId,
     businessName: group.name,
     isDefault: attrs.isDefault?.[0] === "true",
-    featureOverrides,
+    isExternal: attrs.isExternal?.[0] === "true",
+    featureOverrides: parseJsonAttr(attrs, "featureOverrides"),
     updatedAt: nowIso(),
   });
-  const recomputed = recomputeEnabledFeaturesForWorkspace(group.id);
-  return `workspace "${group.name}" synced for customer ${orgId}` + (recomputed ? `, recomputed enabledFeatures for ${recomputed} membership(s)` : "");
+  const recomputed = recomputeEntitlementsForWorkspace(group.id);
+  return `workspace "${group.name}" synced for customer ${orgId}` + (recomputed ? `, recomputed entitlements for ${recomputed} membership(s)` : "");
 }
 
 async function syncUserWorkspace(orgId, groupId, userId, deleted) {
@@ -169,7 +182,8 @@ async function syncUserWorkspace(orgId, groupId, userId, deleted) {
 
   const customer = db.find("customers", "kcOrgId", orgId);
   const workspace = db.find("workspaces", "kcGroupId", groupId);
-  const enabledFeatures = effectiveFeatures(customer?.contract, workspace?.featureOverrides);
+  const entitlements = effectiveEntitlements(customer?.entitlements, workspace?.featureOverrides);
+  const existing = db.find("userWorkspaces", "id", id);
 
   db.upsert("userWorkspaces", "id", {
     id,
@@ -177,7 +191,10 @@ async function syncUserWorkspace(orgId, groupId, userId, deleted) {
     customerId: orgId,
     userId,
     email: user.email,
-    enabledFeatures,
+    entitlements,
+    // Dynamic, local-only - seeded once on first sync, never derived from
+    // Keycloak, never overwritten by a later static-side resync.
+    usage: existing?.usage ?? { current_month_searches: 0 },
     updatedAt: nowIso(),
   });
   return `userWorkspace synced: ${user.email} -> workspace ${groupId}`;
@@ -207,7 +224,12 @@ async function syncUser(userId, deleted) {
 // DELETE events for an org-group's children when its parent Organization
 // is deleted (see cascadeDeleteCustomer) - this is the repair tool for
 // whatever that (or a missed webhook delivery) has already left behind.
+// Preserves each userWorkspace's `usage` counter across the rebuild - it's
+// local-only dynamic state, a resync of Keycloak's static data must never
+// touch it.
 export async function resyncAll() {
+  const previousUsageById = new Map(db.all("userWorkspaces").map((uw) => [uw.id, uw.usage]));
+
   const customers = [];
   const workspaces = [];
   const usersById = new Map();
@@ -221,14 +243,14 @@ export async function resyncAll() {
   for (const orgSummary of orgSummaries) {
     const org = (await keycloakAdmin.getOrganization(orgSummary.id)) || orgSummary;
     const attrs = org.attributes || {};
-    const contract = parseContract(org);
+    const entitlements = parseJsonAttr(attrs, "entitlements");
     customers.push({
       kcOrgId: org.id,
       businessName: org.name,
       alias: org.alias,
-      salesforceId: attrs.salesforceId?.[0] || null,
       isActive: org.enabled,
-      contract,
+      legacyMapping: parseJsonAttr(attrs, "legacyMapping"),
+      entitlements,
       updatedAt: nowIso(),
     });
 
@@ -236,24 +258,18 @@ export async function resyncAll() {
     for (const groupSummary of groupSummaries) {
       const group = (await keycloakAdmin.getOrganizationGroup(org.id, groupSummary.id)) || groupSummary;
       const gAttrs = group.attributes || {};
-      let featureOverrides = null;
-      if (gAttrs.featureOverrides?.[0]) {
-        try {
-          featureOverrides = JSON.parse(gAttrs.featureOverrides[0]);
-        } catch {
-          featureOverrides = null;
-        }
-      }
+      const featureOverrides = parseJsonAttr(gAttrs, "featureOverrides");
       workspaces.push({
         kcGroupId: group.id,
         customerId: org.id,
         businessName: group.name,
         isDefault: gAttrs.isDefault?.[0] === "true",
+        isExternal: gAttrs.isExternal?.[0] === "true",
         featureOverrides,
         updatedAt: nowIso(),
       });
 
-      const enabledFeatures = effectiveFeatures(contract, featureOverrides);
+      const effective = effectiveEntitlements(entitlements, featureOverrides);
       const members = (await keycloakAdmin.getOrganizationGroupMembers(org.id, group.id)) || [];
       for (const user of members) {
         usersById.set(user.id, {
@@ -262,13 +278,15 @@ export async function resyncAll() {
           name: [user.firstName, user.lastName].filter(Boolean).join(" ") || user.username,
           updatedAt: nowIso(),
         });
+        const id = `${group.id}:${user.id}`;
         userWorkspaces.push({
-          id: `${group.id}:${user.id}`,
+          id,
           workspaceId: group.id,
           customerId: org.id,
           userId: user.id,
           email: user.email,
-          enabledFeatures,
+          entitlements: effective,
+          usage: previousUsageById.get(id) ?? { current_month_searches: 0 },
           updatedAt: nowIso(),
         });
       }

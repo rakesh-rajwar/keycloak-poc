@@ -2,7 +2,7 @@ export const dashboardHtml = `<!doctype html>
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Downstream App - Local DB (synced from Keycloak webhooks)</title>
+<title>360 Platform - downstream app local tables</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; background: #0b0f14; color: #e6edf3; }
   h1 { font-size: 1.25rem; }
@@ -23,9 +23,9 @@ export const dashboardHtml = `<!doctype html>
 </style>
 </head>
 <body>
-<h1>Phase 1 PoC &mdash; downstream consumer-app local tables</h1>
-<p>This page shows <em>only</em> data written by this app's webhook handler. Nothing here is edited directly &mdash; it exists purely because Keycloak fired an Admin Event Webhook. Refreshes every 3s.</p>
-<p><button id="resync-btn">Full resync</button><span id="resync-status"></span> &mdash; rebuilds every table below from Keycloak's current state, discarding anything local that no longer has an upstream match (repairs orphans from events Keycloak never fires, e.g. deleting an Organization doesn't cascade-delete its org-groups as separate events).</p>
+<h1>360 Platform &mdash; downstream consumer-app local tables</h1>
+<p>This page shows <em>only</em> data written by this app's webhook handler. Nothing here is edited directly (except the "Simulate search" button below, which is deliberately local-only) &mdash; everything else exists purely because Keycloak fired an Admin Event Webhook. Refreshes every 3s. Edit entitlements/overrides at <a href="/admin">the Customer Admin Portal</a>.</p>
+<p><button id="resync-btn">Full resync</button><span id="resync-status"></span> &mdash; rebuilds every table below from Keycloak's current state, discarding anything local that no longer has an upstream match (repairs orphans from events Keycloak never fires, e.g. deleting an Organization doesn't cascade-delete its org-groups as separate events). Preserves each row's usage counter.</p>
 
 <h2>Customers</h2>
 <table id="customers"></table>
@@ -36,7 +36,7 @@ export const dashboardHtml = `<!doctype html>
 <h2>Users</h2>
 <table id="users"></table>
 
-<h2>User Workspaces</h2>
+<h2>User Workspaces &mdash; entitlements (Keycloak-synced) vs. usage (local-only, Phase 3's dynamic tier)</h2>
 <table id="userWorkspaces"></table>
 
 <h2>Recent webhook events</h2>
@@ -56,13 +56,24 @@ function fmt(v) {
   if (typeof v === 'object') return JSON.stringify(v);
   return String(v);
 }
+function renderUserWorkspaces(el, rows) {
+  if (!rows.length) { el.innerHTML = '<tr><td class="empty">no rows yet</td></tr>'; return; }
+  const columns = ['email', 'workspaceId', 'entitlements', 'usage'];
+  el.innerHTML = '<tr>' + columns.map(c => '<th>' + c + '</th>').join('') + '<th></th></tr>' +
+    rows.map(r => '<tr>' + columns.map(c => '<td>' + fmt(r[c]) + '</td>').join('') +
+      '<td><button class="usage-btn" data-id="' + r.id + '">Simulate search</button></td></tr>').join('');
+  el.querySelectorAll('.usage-btn').forEach(btn => btn.addEventListener('click', async () => {
+    await fetch('/admin/user-workspaces/' + btn.dataset.id + '/simulate-usage', { method: 'POST' });
+    refresh();
+  }));
+}
 async function refresh() {
   const state = await fetch('/state').then(r => r.json());
   const events = await fetch('/events').then(r => r.json());
-  renderTable(document.getElementById('customers'), state.customers, ['businessName', 'alias', 'salesforceId', 'isActive', 'contract', 'kcOrgId', 'updatedAt']);
-  renderTable(document.getElementById('workspaces'), state.workspaces, ['businessName', 'customerId', 'isDefault', 'featureOverrides', 'kcGroupId', 'updatedAt']);
+  renderTable(document.getElementById('customers'), state.customers, ['businessName', 'alias', 'isActive', 'legacyMapping', 'entitlements', 'kcOrgId', 'updatedAt']);
+  renderTable(document.getElementById('workspaces'), state.workspaces, ['businessName', 'customerId', 'isDefault', 'isExternal', 'featureOverrides', 'kcGroupId', 'updatedAt']);
   renderTable(document.getElementById('users'), state.users, ['name', 'email', 'kcUserId', 'updatedAt']);
-  renderTable(document.getElementById('userWorkspaces'), state.userWorkspaces, ['email', 'workspaceId', 'enabledFeatures', 'updatedAt']);
+  renderUserWorkspaces(document.getElementById('userWorkspaces'), state.userWorkspaces);
   const evRows = events.slice(0, 25).map(e => ({
     receivedAt: e.receivedAt,
     resourceType: e.resourceType,

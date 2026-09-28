@@ -1,5 +1,5 @@
 KC_URL="${KC_URL:-http://localhost:8080}"
-REALM="${REALM:-onclusive-poc}"
+REALM="${REALM:-360-platform}"
 ADMIN_USER="${ADMIN_USER:-admin}"
 ADMIN_PASS="${ADMIN_PASS:-admin}"
 

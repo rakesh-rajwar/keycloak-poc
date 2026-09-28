@@ -45,7 +45,7 @@ services:
     environment:
       PORT: 4000
       KEYCLOAK_BASE_URL: http://keycloak:8080
-      KEYCLOAK_REALM: onclusive-poc
+      KEYCLOAK_REALM: 360-platform
       KEYCLOAK_CLIENT_ID: webhook-consumer
       KEYCLOAK_CLIENT_SECRET: poc-webhook-consumer-secret
       WEBHOOK_SECRET: poc-shared-webhook-secret

@@ -1,23 +1,17 @@
 #!/usr/bin/env node
 //
-// Seeds multiple customers/workspaces/users via the Admin REST API, same
-// mechanism scripts/demo.sh uses for its single "Acme Corp" walkthrough.
-// This is additive - run demo.sh first (or not), this just adds more.
-//
-// Feature keys come from claim's own prisma/seed.js FEATURE_CATALOG (see
-// consumer-app/src/featureCatalog.js), not invented. Workspace shapes
-// deliberately include the multi-workspace-per-customer cases worth
-// demonstrating: a single-workspace customer, a customer with an internal
-// team workspace on a feature-restricted subset, and a PR-agency-style
-// customer with several client-isolated workspaces (workspaces' own
-// schema comment: "isolate data and hold users under a customer (for PR
-// agencies, etc.)").
+// Seeds two more customers on top of demo.sh's ACME Corporation, in the
+// 360 Platform data model: entitlements (web_media/social_media,
+// per-module access/tier/search_limit/role) + legacyMapping (Phase 0's
+// Legacy Mapping Dictionary), both flattened onto the customer
+// Organization as attributes, plus workspaces for internal sub-teams and
+// invited external agencies.
 //
 // Usage: node scripts/seed.js   (KC_URL/REALM/ADMIN_USER/ADMIN_PASS env
 // vars override the same defaults as scripts/lib.sh)
 
 const KC_URL = process.env.KC_URL || "http://localhost:8080";
-const REALM = process.env.REALM || "onclusive-poc";
+const REALM = process.env.REALM || "360-platform";
 const ADMIN_USER = process.env.ADMIN_USER || "admin";
 const ADMIN_PASS = process.env.ADMIN_PASS || "admin";
 
@@ -51,83 +45,53 @@ async function api(token, method, path, body) {
 
 const SEED = [
   {
-    businessName: "Globex Corporation",
-    alias: "globex-corp",
-    salesforceId: "SF-20002",
-    contract: {
-      name: "Globex - Starter",
-      startDate: "2026-02-01",
-      endDate: "2026-12-31",
-      featureSets: ["mentions", "mentions.cm"],
+    businessName: "Globex Media Group",
+    alias: "globex-media-group",
+    legacyMapping: {
+      master_account_id: "ACC-55871",
+      master_account_name: "Globex Media Group",
+      legacy_app_mappings: { mention_pro: "W-204", mentions_cm: "S-119" },
+    },
+    entitlements: {
+      web_media: { access: true, tier: "basic", search_limit: 25 },
+      social_media: { access: false },
     },
     workspaces: [
       {
-        name: "globex-default",
+        name: "Comms",
         isDefault: true,
-        users: [{ username: "alice.walker", email: "alice.walker@globex.example.com", firstName: "Alice", lastName: "Walker" }],
-      },
-      {
-        name: "globex-limited",
-        featureOverrides: { "mentions.cm": false },
-        users: [{ username: "sam.patel", email: "sam.patel@globex.example.com", firstName: "Sam", lastName: "Patel" }],
+        users: [{ username: "ravi.desai", email: "ravi.desai@globex.example.com", firstName: "Ravi", lastName: "Desai" }],
       },
     ],
   },
   {
-    businessName: "Initech",
-    alias: "initech",
-    salesforceId: "SF-30003",
-    contract: {
-      name: "Initech - Enterprise",
-      startDate: "2026-01-01",
-      endDate: "2027-01-01",
-      featureSets: [
-        "mentions", "mentions.cm", "mentions.360",
-        "contacts.prmanager", "review.rep",
-        "geo", "analytics-basic", "analytics-premium",
-      ],
+    businessName: "Initech Communications",
+    alias: "initech-communications",
+    legacyMapping: {
+      master_account_id: "ACC-70144",
+      master_account_name: "Initech Communications",
+      legacy_app_mappings: { mention_pro: "W-330", mentions_cm: "S-641", prmanager: "B-905" },
+    },
+    entitlements: {
+      web_media: { access: true, tier: "premium", search_limit: 500 },
+      social_media: { access: true, role: "admin" },
     },
     workspaces: [
       {
-        name: "initech-default",
+        name: "PR",
         isDefault: true,
-        users: [{ username: "bob.chen", email: "bob.chen@initech.example.com", firstName: "Bob", lastName: "Chen" }],
+        users: [{ username: "megan.oconnor", email: "megan.oconnor@initech.example.com", firstName: "Megan", lastName: "O'Connor" }],
       },
       {
-        name: "initech-finance",
-        // Internal team with a narrower slice of the full contract.
-        featureOverrides: { "review.rep": false, "analytics-premium": false },
-        users: [{ username: "carol.diaz", email: "carol.diaz@initech.example.com", firstName: "Carol", lastName: "Diaz" }],
-      },
-    ],
-  },
-  {
-    businessName: "Umbrella PR Agency",
-    alias: "umbrella-pr",
-    salesforceId: "SF-40004",
-    contract: {
-      name: "Umbrella - Agency",
-      startDate: "2026-03-01",
-      endDate: "2026-12-31",
-      featureSets: ["mentions", "mentions.cm", "contacts.prmanager", "analytics-basic"],
-    },
-    // Agency holding several sub-clients, each isolated in its own
-    // workspace - the exact case workspaces.featureOverrides exists for.
-    workspaces: [
-      {
-        name: "umbrella-client-northwind",
-        isDefault: true,
-        users: [{ username: "dave.osei", email: "dave.osei@umbrella.example.com", firstName: "Dave", lastName: "Osei" }],
+        name: "Compliance",
+        featureOverrides: { social_media: { access: false } },
+        users: [{ username: "derek.wallace", email: "derek.wallace@initech.example.com", firstName: "Derek", lastName: "Wallace" }],
       },
       {
-        name: "umbrella-client-wayne",
-        featureOverrides: { "contacts.prmanager": false },
-        users: [{ username: "erin.oyelaran", email: "erin.oyelaran@umbrella.example.com", firstName: "Erin", lastName: "Oyelaran" }],
-      },
-      {
-        name: "umbrella-client-stark",
-        featureOverrides: { "analytics-basic": false },
-        users: [{ username: "frank.lin", email: "frank.lin@umbrella.example.com", firstName: "Frank", lastName: "Lin" }],
+        name: "External PR Agency",
+        isExternal: true,
+        featureOverrides: { web_media: { tier: "standard", search_limit: 50 }, social_media: { access: false } },
+        users: [{ username: "hana.kobayashi", email: "hana.kobayashi@partner-agency.example.com", firstName: "Hana", lastName: "Kobayashi" }],
       },
     ],
   },
@@ -142,16 +106,16 @@ async function main() {
       name: customer.businessName,
       alias: customer.alias,
       enabled: true,
-      domains: [],
       attributes: {
-        salesforceId: [customer.salesforceId],
-        contract: [JSON.stringify(customer.contract)],
+        legacyMapping: [JSON.stringify(customer.legacyMapping)],
+        entitlements: [JSON.stringify(customer.entitlements)],
       },
     });
     console.log(`  customer id: ${orgId}`);
 
     for (const ws of customer.workspaces) {
       const attributes = { isDefault: [String(!!ws.isDefault)] };
+      if (ws.isExternal) attributes.isExternal = ["true"];
       if (ws.featureOverrides) attributes.featureOverrides = [JSON.stringify(ws.featureOverrides)];
       const groupId = await api(token, "POST", `/organizations/${orgId}/groups`, {
         name: ws.name,
